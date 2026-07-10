@@ -17,3 +17,9 @@
 - Added horizontal and vertical direction classes to the applet container.
 - Updated `uninstall.sh` to safely remove `stylesheet.css`.
 - Verified tray icon spacing and alignment on Linux Mint 22.3 with Cinnamon 6.6.7.
+- Added a global tray icon scale setting.
+- Supported icon scale values from 80% to 120% in 5% steps.
+- Set the default icon scale to 100%.
+- Recalculate scaled icon sizes from Cinnamon's current panel icon size each time.
+- Kept RecorderIcon and other Cinnamon applets unaffected by tray icon scaling.
+- Verified 80%, 100%, and 120% icon scaling on Linux Mint 22.3 with Cinnamon 6.6.7.

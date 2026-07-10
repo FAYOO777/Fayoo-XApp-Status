@@ -1,0 +1,19 @@
+{
+    "icon-scale": {
+        "type": "combobox",
+        "default": 100,
+        "description": "Tray icon scale",
+        "options": {
+            "80%": 80,
+            "85%": 85,
+            "90%": 90,
+            "95%": 95,
+            "100%": 100,
+            "105%": 105,
+            "110%": 110,
+            "115%": 115,
+            "120%": 120
+        },
+        "tooltip": "Scale tray icons shown by this applet. 100% keeps the Cinnamon default size."
+    }
+}

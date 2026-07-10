@@ -19,11 +19,20 @@ This repository does not modify files under `/usr/share` and does not replace `x
 
 ## Current Stage
 
-This is a minimal fork only. It changes the applet UUID, display name, description, and log identifier.
-
-No custom tray features have been added yet. Tray icon display, sorting, click handling, scroll handling, visibility handling, and XApp monitor logic remain based on the system applet baseline.
+This project started as a minimal fork and now includes small tray presentation customizations. Tray icon sorting, click handling, scroll handling, visibility handling, and XApp monitor logic remain based on the system applet baseline.
 
 The current baseline has been verified to install in development mode and run on Linux Mint 22.3 `zena` with Cinnamon `6.6.7+zena` and XApp `3.2.2+zena`.
+
+## Features
+
+The applet provides a global tray icon scale setting for the XApp tray icons it hosts.
+
+- Supported values: `80%`, `85%`, `90%`, `95%`, `100%`, `105%`, `110%`, `115%`, `120%`
+- Default value: `100%`
+- Scope: only XApp tray icons shown by `fayoo-xapp-status@fayoo`
+- The setting does not change Cinnamon panel height and does not affect other applets.
+
+To change the scale, open Cinnamon's Applets settings, select `Fayoo XApp Status Applet`, and open its configuration dialog.
 
 ## Component Relationship
 
