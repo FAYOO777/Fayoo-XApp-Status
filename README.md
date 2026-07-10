@@ -64,6 +64,12 @@ A diagnostic menu is available to inspect all current XApp tray icon details. Ri
 - Supports copying per-icon diagnostic text.
 - Supports copying a full diagnostics report for all icons.
 - The diagnostic menu is read-only and does not modify any application or icon state.
+- Supports adding a recommended hide rule directly from the menu (`Add Recommended Hide Rule`).
+- Adding a rule appends it to the `hidden-icons` setting without deleting, reordering, or reformatting existing rules.
+- If the rule already exists the menu shows a non-clickable `Hide Rule Already Added` status.
+- Rule deduplication is case-insensitive and compares the complete rule text only.
+- Broader existing rules do not prevent adding a more specific recommended rule.
+- Automatic rule removal from the menu is not yet supported; delete rules via the applet settings.
 
 ## Component Relationship
 
