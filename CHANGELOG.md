@@ -23,3 +23,11 @@
 - Recalculate scaled icon sizes from Cinnamon's current panel icon size each time.
 - Kept RecorderIcon and other Cinnamon applets unaffected by tray icon scaling.
 - Verified 80%, 100%, and 120% icon scaling on Linux Mint 22.3 with Cinnamon 6.6.7.
+- Added rule-based hiding for XApp tray icons.
+- Supported `name`, `icon`, `tooltip`, and `label` fields for hidden icon rules.
+- Supported case-insensitive contains matching for hidden icon rules.
+- Supported comments and unprefixed general hidden icon rules.
+- Applied hidden icon setting changes immediately.
+- Combined user-hidden state with each application's own Visible state.
+- Re-applied hidden icon matching when icon properties change.
+- Verified hidden icon rules alongside global icon scaling on Linux Mint 22.3 with Cinnamon 6.6.7.

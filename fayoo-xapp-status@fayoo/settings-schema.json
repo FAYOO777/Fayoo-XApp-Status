@@ -15,5 +15,12 @@
             "120%": 120
         },
         "tooltip": "Scale tray icons shown by this applet. 100% keeps the Cinnamon default size."
+    },
+    "hidden-icons": {
+        "type": "textview",
+        "default": "",
+        "description": "Hidden tray icons",
+        "height": 140,
+        "tooltip": "Enter one rule per line. Supported prefixes: name:, icon:, tooltip:, label:. Matching is case-insensitive. Empty lines and lines beginning with # are ignored."
     }
 }
