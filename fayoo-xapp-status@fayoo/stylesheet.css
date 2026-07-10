@@ -1,0 +1,10 @@
+.fayoo-xapp-status-horizontal .fayoo-xapp-status-icon {
+    padding-left: 2px;
+    padding-right: 2px;
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+.fayoo-xapp-status-horizontal .fayoo-xapp-status-icon-holder {
+    padding: 0;
+}

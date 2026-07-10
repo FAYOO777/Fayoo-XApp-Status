@@ -11,3 +11,9 @@
 - Completed development-mode installation with a user-local symbolic link.
 - Verified baseline runtime behavior on Linux Mint 22.3 with Cinnamon 6.6.7.
 - Added project documentation, changelog, git ignore rules, and license file.
+- Added independent CSS classes for tray icons.
+- Adjusted horizontal panel tray icon left and right padding to 2px.
+- Explicitly vertically centered the tray icon holder.
+- Added horizontal and vertical direction classes to the applet container.
+- Updated `uninstall.sh` to safely remove `stylesheet.css`.
+- Verified tray icon spacing and alignment on Linux Mint 22.3 with Cinnamon 6.6.7.
