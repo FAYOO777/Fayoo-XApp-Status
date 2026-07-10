@@ -50,7 +50,7 @@ fi
 
 for entry in "${TARGET_DIR}"/*; do
     case "$(basename "${entry}")" in
-        applet.js|metadata.json|stylesheet.css) ;;
+        applet.js|metadata.json|settings-schema.json|stylesheet.css) ;;
         *)
             echo "Refusing to remove directory containing unexpected file: ${entry}" >&2
             exit 1
@@ -61,6 +61,9 @@ done
 rm -- "${TARGET_DIR}/applet.js" "${TARGET_DIR}/metadata.json"
 if [[ -f "${TARGET_DIR}/stylesheet.css" ]]; then
     rm -- "${TARGET_DIR}/stylesheet.css"
+fi
+if [[ -f "${TARGET_DIR}/settings-schema.json" ]]; then
+    rm -- "${TARGET_DIR}/settings-schema.json"
 fi
 rmdir "${TARGET_DIR}"
 

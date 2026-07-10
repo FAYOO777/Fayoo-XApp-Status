@@ -7,6 +7,7 @@ const Interfaces = imports.misc.interfaces;
 const Applet = imports.ui.applet;
 const Main = imports.ui.main;
 const Mainloop = imports.mainloop;
+const Settings = imports.ui.settings;
 const SignalManager = imports.misc.signalManager;
 const Gtk = imports.gi.Gtk;
 const XApp = imports.gi.XApp;
@@ -219,7 +220,8 @@ class XAppStatusIcon {
             }
 
             this.iconName = iconName;
-            this.iconSize = this.applet.getPanelIconSize(type);
+            const baseIconSize = this.applet.getPanelIconSize(type);
+            this.iconSize = this.applet.getScaledIconSize(baseIconSize);
             this.proxy.icon_size = this.iconSize;
 
             // Assume symbolic icons would always be square/suitable for an StIcon.
@@ -394,7 +396,7 @@ class XAppStatusIcon {
 }
 
 class CinnamonXAppStatusApplet extends Applet.Applet {
-    constructor(orientation, panel_height, instance_id) {
+    constructor(metadata, orientation, panel_height, instance_id) {
         super(orientation, panel_height, instance_id);
 
         this.orientation = orientation;
@@ -441,6 +443,33 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
          * types, listen to the panel signal directly, so we always receive the update. */
         this.signalManager.connect(this.panel, "icon-size-changed", this.icon_size_changed, this);
         this.signalManager.connect(global, "scale-changed", this.ui_scale_changed, this);
+
+        this.settings = new Settings.AppletSettings(this, metadata.uuid, instance_id);
+        this.settings.bind(
+            "icon-scale",
+            "iconScale",
+            () => this.onIconScaleChanged()
+        );
+    }
+
+    getScaledIconSize(baseSize) {
+        let scale = Number(this.iconScale);
+
+        if (!Number.isFinite(scale)) {
+            scale = 100;
+        }
+
+        scale = Math.max(80, Math.min(120, scale));
+
+        return Math.max(1, Math.round(baseSize * scale / 100));
+    }
+
+    onIconScaleChanged() {
+        if (this.statusIcons) {
+            for (let owner in this.statusIcons) {
+                this.statusIcons[owner].refresh();
+            }
+        }
     }
 
     setContainerOrientationClass(orientation) {
@@ -631,6 +660,11 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     }
 
     on_applet_removed_from_panel() {
+        if (this.settings) {
+            this.settings.finalize();
+            this.settings = null;
+        }
+
         this.signalManager.disconnectAllSignals();
 
         for (let key in this.statusIcons) {
@@ -674,5 +708,10 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 }
 
 function main(metadata, orientation, panel_height, instance_id) {
-    return new CinnamonXAppStatusApplet(orientation, panel_height, instance_id);
+    return new CinnamonXAppStatusApplet(
+        metadata,
+        orientation,
+        panel_height,
+        instance_id
+    );
 }
