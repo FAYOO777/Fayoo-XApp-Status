@@ -15,6 +15,9 @@ const Tooltips = imports.ui.tooltips;
 
 const HORIZONTAL_STYLE = 'padding-left: 2px; padding-right: 2px; padding-top: 0; padding-bottom: 0';
 const VERTICAL_STYLE = 'padding-left: 0; padding-right: 0; padding-top: 2px; padding-bottom: 2px';
+const CONTAINER_STYLE_CLASS = 'fayoo-xapp-status-container';
+const HORIZONTAL_STYLE_CLASS = 'fayoo-xapp-status-horizontal';
+const VERTICAL_STYLE_CLASS = 'fayoo-xapp-status-vertical';
 
 
 class RecorderIcon {
@@ -112,7 +115,7 @@ class XAppStatusIcon {
         this.iconName = null;
 
         this.actor = new St.BoxLayout({
-            style_class: "applet-box",
+            style_class: "applet-box fayoo-xapp-status-icon",
             reactive: !global.settings.get_boolean('panel-edit-mode'),
             track_hover: true,
             // The systray use a layout manager, we need to fill the space of the actor
@@ -121,7 +124,10 @@ class XAppStatusIcon {
             y_expand: true
         });
 
-        this.icon_holder = new St.Bin();
+        this.icon_holder = new St.Bin({
+            style_class: "fayoo-xapp-status-icon-holder",
+            y_align: St.Align.MIDDLE
+        });
         this.iconSize = this.applet.getPanelIconSize(St.IconType.FULLCOLOR);
 
         this.proxy.icon_size = this.iconSize;
@@ -399,10 +405,12 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         this.actor.set_important(true);  // ensure we get class details from the default theme if not present
 
         if (this.orientation == St.Side.TOP || this.orientation == St.Side.BOTTOM) {
-            this.manager_container = new St.BoxLayout( { vertical: false, style: HORIZONTAL_STYLE });
+            this.manager_container = new St.BoxLayout( { vertical: false, style: HORIZONTAL_STYLE, style_class: CONTAINER_STYLE_CLASS });
         } else {
-            this.manager_container = new St.BoxLayout( { vertical: true, style: VERTICAL_STYLE });
+            this.manager_container = new St.BoxLayout( { vertical: true, style: VERTICAL_STYLE, style_class: CONTAINER_STYLE_CLASS });
         }
+
+        this.setContainerOrientationClass(this.orientation);
 
         this.actor.add_actor (this.manager_container);
         this.manager_container.show();
@@ -433,6 +441,17 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
          * types, listen to the panel signal directly, so we always receive the update. */
         this.signalManager.connect(this.panel, "icon-size-changed", this.icon_size_changed, this);
         this.signalManager.connect(global, "scale-changed", this.ui_scale_changed, this);
+    }
+
+    setContainerOrientationClass(orientation) {
+        this.manager_container.remove_style_class_name(HORIZONTAL_STYLE_CLASS);
+        this.manager_container.remove_style_class_name(VERTICAL_STYLE_CLASS);
+
+        if (orientation == St.Side.TOP || orientation == St.Side.BOTTOM) {
+            this.manager_container.add_style_class_name(HORIZONTAL_STYLE_CLASS);
+        } else {
+            this.manager_container.add_style_class_name(VERTICAL_STYLE_CLASS);
+        }
     }
 
     getKey(icon_proxy) {
@@ -647,6 +666,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             this.manager_container.vertical = true;
             this.manager_container.style = VERTICAL_STYLE;
         }
+
+        this.setContainerOrientationClass(newOrientation);
 
         this.refreshIcons();
     }
