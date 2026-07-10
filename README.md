@@ -55,6 +55,16 @@ icon:fayoo-fcitx-pinyin
 tooltip:Clash Party
 ```
 
+A diagnostic menu is available to inspect all current XApp tray icon details. Right-click the applet and select `Tray Icon Info`.
+
+- Lists every XApp tray icon in real time, including hidden ones.
+- Shows `name`, `icon`, `tooltip`, `label`.
+- Shows application-visible, hidden-by-rule, and effective-visible states.
+- Supports copying the recommended hide rule per-icon.
+- Supports copying per-icon diagnostic text.
+- Supports copying a full diagnostics report for all icons.
+- The diagnostic menu is read-only and does not modify any application or icon state.
+
 ## Component Relationship
 
 Applications expose tray items through `StatusNotifierItem` interfaces. The system `xapp-sn-watcher` service registers as `org.x.StatusNotifierWatcher`, implements the `org.kde.StatusNotifierWatcher` watcher role, and exports XApp status icon objects.

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added `Tray Icon Info` right-click submenu.
+- Added real-time diagnostic information for current XApp tray icons.
+- Added recommended hide rule generation.
+- Added per-icon and full diagnostic information copying.
+- Supported viewing effective visibility state of hidden icons.
+- Verified tray icon diagnostics on Linux Mint 22.3 with Cinnamon 6.6.7.
+
 ## [0.1.0] - 2026-07-11
 
 - Created independent applet fork `fayoo-xapp-status@fayoo` from the local system baseline `xapp-status@cinnamon.org`.
