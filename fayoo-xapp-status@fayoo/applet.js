@@ -114,6 +114,7 @@ class XAppStatusIcon {
         this.proxy = proxy;
 
         this.iconName = null;
+        this.applicationVisible = true;
 
         this.actor = new St.BoxLayout({
             style_class: "applet-box fayoo-xapp-status-icon",
@@ -170,6 +171,14 @@ class XAppStatusIcon {
         if ('Name' in prop_names) {
             this.applet.sortIcons();
         }
+
+        if ('Name' in prop_names ||
+            'IconName' in prop_names ||
+            'TooltipText' in prop_names ||
+            'Label' in prop_names) {
+            this.updateEffectiveVisibility();
+        }
+
         if ('PrimaryMenuIsOpen' in prop_names) {
             if (!proxy.primary_menu_is_open) {
                 this.actor.sync_hover();
@@ -289,6 +298,13 @@ class XAppStatusIcon {
     }
 
     setVisible(visible) {
+        this.applicationVisible = Boolean(visible);
+        this.updateEffectiveVisibility();
+    }
+
+    updateEffectiveVisibility() {
+        const visible = this.applicationVisible && !this.applet.isStatusIconHidden(this.proxy);
+
         if (visible) {
             this.actor.show();
         }
@@ -421,6 +437,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         this.manager_container.add_actor(this._recording_indicator.actor);
 
         this.statusIcons = {};
+        this.hiddenIconRules = [];
 
         /* This doesn't really work 100% because applets get reloaded and we end up losing this
          * list. Not that big a deal in practice*/
@@ -450,6 +467,13 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             "iconScale",
             () => this.onIconScaleChanged()
         );
+        this.settings.bind(
+            "hidden-icons",
+            "hiddenIcons",
+            () => this.onHiddenIconsChanged()
+        );
+
+        this.rebuildHiddenIconRules();
     }
 
     getScaledIconSize(baseSize) {
@@ -469,6 +493,86 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             for (let owner in this.statusIcons) {
                 this.statusIcons[owner].refresh();
             }
+        }
+    }
+
+    rebuildHiddenIconRules() {
+        const prefixes = ["name", "icon", "tooltip", "label"];
+
+        this.hiddenIconRules = String(this.hiddenIcons || "")
+            .split("\n")
+            .map(line => line.trim())
+            .filter(line => line && !line.startsWith("#"))
+            .map(line => {
+                const separatorIndex = line.indexOf(":");
+
+                if (separatorIndex > 0) {
+                    const prefix = line.slice(0, separatorIndex).trim().toLowerCase();
+
+                    if (prefixes.indexOf(prefix) !== -1) {
+                        return {
+                            field: prefix,
+                            value: line.slice(separatorIndex + 1).trim().toLowerCase()
+                        };
+                    }
+                }
+
+                return {
+                    field: null,
+                    value: line.toLowerCase()
+                };
+            })
+            .filter(rule => rule.value);
+    }
+
+    getStatusIconMatchFields(iconProxy) {
+        return {
+            name: String(iconProxy.name || "").trim(),
+            icon: String(iconProxy.icon_name || "").trim(),
+            tooltip: String(iconProxy.tooltip_text || "").trim(),
+            label: String(iconProxy.label || "").trim()
+        };
+    }
+
+    isStatusIconHidden(iconProxy) {
+        if (this.hiddenIconRules.length === 0) {
+            return false;
+        }
+
+        const fields = this.getStatusIconMatchFields(iconProxy);
+        const lowerFields = {};
+
+        for (let field in fields) {
+            lowerFields[field] = fields[field].toLowerCase();
+        }
+
+        for (let rule of this.hiddenIconRules) {
+            if (rule.field) {
+                if (lowerFields[rule.field].includes(rule.value)) {
+                    return true;
+                }
+            }
+            else {
+                for (let field in lowerFields) {
+                    if (lowerFields[field].includes(rule.value)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    onHiddenIconsChanged() {
+        this.rebuildHiddenIconRules();
+
+        if (!this.statusIcons) {
+            return;
+        }
+
+        for (let key in this.statusIcons) {
+            this.statusIcons[key].updateEffectiveVisibility();
         }
     }
 

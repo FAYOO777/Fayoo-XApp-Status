@@ -34,6 +34,27 @@ The applet provides a global tray icon scale setting for the XApp tray icons it 
 
 To change the scale, open Cinnamon's Applets settings, select `Fayoo XApp Status Applet`, and open its configuration dialog.
 
+The applet can also hide selected XApp tray icons by rule. Add rules in the `Hidden tray icons` setting, one rule per line.
+
+- Supported prefixes: `name:`, `icon:`, `tooltip:`, `label:`
+- Prefixes and matched text are case-insensitive.
+- Matching uses plain contains matching, not regular expressions.
+- Lines beginning with `#` are comments.
+- Rules without a prefix match all supported fields: name, icon, tooltip, and label.
+- Prefer complete, stable `name:` rules when possible.
+- Very short rules can match multiple icons, for example `name:t`.
+- Do not use D-Bus unique names like `:1.xxx`, object paths, or temporary PNG paths as rules.
+
+Example hidden icon rules:
+
+```text
+name:wechat
+name:blueman
+name:telegramdesktop
+icon:fayoo-fcitx-pinyin
+tooltip:Clash Party
+```
+
 ## Component Relationship
 
 Applications expose tray items through `StatusNotifierItem` interfaces. The system `xapp-sn-watcher` service registers as `org.x.StatusNotifierWatcher`, implements the `org.kde.StatusNotifierWatcher` watcher role, and exports XApp status icon objects.
