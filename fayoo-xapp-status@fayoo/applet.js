@@ -12,6 +12,7 @@ const SignalManager = imports.misc.signalManager;
 const Gtk = imports.gi.Gtk;
 const XApp = imports.gi.XApp;
 const GLib = imports.gi.GLib;
+const PopupMenu = imports.ui.popupMenu;
 const Tooltips = imports.ui.tooltips;
 
 const HORIZONTAL_STYLE = 'padding-left: 2px; padding-right: 2px; padding-top: 0; padding-bottom: 0';
@@ -474,6 +475,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         );
 
         this.rebuildHiddenIconRules();
+
+        this.buildTrayInfoMenuItem();
     }
 
     getScaledIconSize(baseSize) {
@@ -574,6 +577,208 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         for (let key in this.statusIcons) {
             this.statusIcons[key].updateEffectiveVisibility();
         }
+    }
+
+    buildTrayInfoMenuItem() {
+        this._trayInfoItem = new PopupMenu.PopupSubMenuMenuItem("Tray Icon Info");
+
+        this._trayInfoConnectId = this._trayInfoItem.menu.connect(
+            "open-state-changed",
+            Lang.bind(this, (menu, open) => {
+                if (open) {
+                    this.rebuildTrayInfoMenu();
+                }
+            })
+        );
+
+        this._applet_context_menu.addMenuItem(this._trayInfoItem);
+    }
+
+    rebuildTrayInfoMenu() {
+        this._trayInfoItem.menu.removeAll();
+
+        const iconEntries = [];
+
+        for (let key in this.statusIcons) {
+            iconEntries.push(this.statusIcons[key]);
+        }
+
+        iconEntries.sort(this._sortFunc);
+
+        if (iconEntries.length === 0) {
+            const emptyItem = new PopupMenu.PopupMenuItem("No tray icons", {
+                reactive: false
+            });
+            this._trayInfoItem.menu.addMenuItem(emptyItem);
+            return;
+        }
+
+        const copyAllItem = new PopupMenu.PopupMenuItem("Copy All Diagnostics");
+        copyAllItem.connect("activate", Lang.bind(this, () => {
+            this.copyTextToClipboard(this.formatAllDiagnostics(iconEntries));
+        }));
+        this._trayInfoItem.menu.addMenuItem(copyAllItem);
+        this._trayInfoItem.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        for (let icon of iconEntries) {
+            const fields = this.getStatusIconMatchFields(icon.proxy);
+            const title = this.generateIconTitle(fields);
+            const subMenu = new PopupMenu.PopupSubMenuMenuItem(title);
+
+            const hidden = this.isStatusIconHidden(icon.proxy);
+            const effective = Boolean(icon.applicationVisible) && !hidden;
+
+            const fieldLines = [
+                { label: "name", value: fields.name },
+                { label: "icon", value: fields.icon },
+                { label: "tooltip", value: fields.tooltip },
+                { label: "label", value: fields.label },
+                { label: "application-visible", value: icon.applicationVisible ? "true" : "false" },
+                { label: "hidden-by-rule", value: hidden ? "true" : "false" },
+                { label: "effective-visible", value: effective ? "true" : "false" }
+            ];
+
+            const recommendedRule = this.getRecommendedRule(icon.proxy);
+
+            for (let fl of fieldLines) {
+                const labelText = fl.value || "(empty)";
+                const displayText = `${fl.label}: ${labelText.length > 60 ? labelText.slice(0, 57) + "..." : labelText}`;
+                const fi = new PopupMenu.PopupMenuItem(displayText, {
+                    reactive: false
+                });
+                subMenu.menu.addMenuItem(fi);
+            }
+
+            const ruleText = recommendedRule || "unavailable";
+            const ruleDisplay = recommendedRule
+                ? `Recommended rule: ${ruleText}`
+                : "Recommended rule: unavailable";
+            const ruleItem = new PopupMenu.PopupMenuItem(ruleDisplay, {
+                reactive: false
+            });
+            subMenu.menu.addMenuItem(ruleItem);
+            subMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+            if (recommendedRule) {
+                const copyRuleItem = new PopupMenu.PopupMenuItem("Copy Recommended Rule");
+                copyRuleItem.connect("activate", Lang.bind(this, () => {
+                    this.copyTextToClipboard(recommendedRule);
+                }));
+                subMenu.menu.addMenuItem(copyRuleItem);
+            }
+            else {
+                const copyRuleItem = new PopupMenu.PopupMenuItem("Copy Recommended Rule", {
+                    reactive: false
+                });
+                subMenu.menu.addMenuItem(copyRuleItem);
+            }
+
+            const copyDiagItem = new PopupMenu.PopupMenuItem("Copy Icon Diagnostics");
+            copyDiagItem.connect("activate", Lang.bind(this, () => {
+                this.copyTextToClipboard(this.formatIconDiagnostics(icon));
+            }));
+            subMenu.menu.addMenuItem(copyDiagItem);
+
+            this._trayInfoItem.menu.addMenuItem(subMenu);
+        }
+    }
+
+    generateIconTitle(fields) {
+        if (fields.name && !/^:\d+\.\d+$/.test(fields.name)) {
+            return fields.name;
+        }
+
+        const tooltipLine = fields.tooltip.split("\n")[0].trim();
+        if (tooltipLine && tooltipLine.length >= 3) {
+            return tooltipLine;
+        }
+
+        if (fields.icon && fields.icon.length >= 3) {
+            return fields.icon;
+        }
+
+        if (fields.label && fields.label.length >= 3) {
+            return fields.label;
+        }
+
+        return "Unnamed tray icon";
+    }
+
+    getRecommendedRule(iconProxy) {
+        const fields = this.getStatusIconMatchFields(iconProxy);
+        const name = fields.name;
+        const icon = fields.icon;
+        const tooltip = fields.tooltip;
+        const label = fields.label;
+
+        if (name && !/^:\d+\.\d+$/.test(name) && name.length >= 3) {
+            return `name:${name}`;
+        }
+
+        if (icon &&
+            icon.length >= 3 &&
+            !icon.includes("xapp-tmp-") &&
+            !icon.startsWith("/dev/shm/") &&
+            !icon.startsWith("/tmp/")) {
+            return `icon:${icon}`;
+        }
+
+        const tooltipLine = tooltip.split("\n")[0].trim().replace(/\s+/g, " ");
+        if (tooltipLine && tooltipLine.length >= 3 && !/^\d+$/.test(tooltipLine)) {
+            return `tooltip:${tooltipLine}`;
+        }
+
+        const cleanLabel = label.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+        if (cleanLabel && cleanLabel.length >= 3) {
+            return `label:${cleanLabel}`;
+        }
+
+        return null;
+    }
+
+    copyTextToClipboard(text) {
+        St.Clipboard.get_default().set_text(
+            St.ClipboardType.CLIPBOARD,
+            text
+        );
+    }
+
+    formatIconDiagnostics(icon) {
+        const fields = this.getStatusIconMatchFields(icon.proxy);
+        const hidden = this.isStatusIconHidden(icon.proxy);
+        const effective = Boolean(icon.applicationVisible) && !hidden;
+        const recommendedRule = this.getRecommendedRule(icon.proxy);
+
+        const lines = [];
+        lines.push(`name: ${fields.name || "(empty)"}`);
+        lines.push(`icon: ${fields.icon || "(empty)"}`);
+        lines.push(`tooltip: ${fields.tooltip || "(empty)"}`);
+        lines.push(`label: ${fields.label || "(empty)"}`);
+        lines.push(`application-visible: ${icon.applicationVisible ? "true" : "false"}`);
+        lines.push(`hidden-by-rule: ${hidden ? "true" : "false"}`);
+        lines.push(`effective-visible: ${effective ? "true" : "false"}`);
+        lines.push(`recommended-rule: ${recommendedRule || "unavailable"}`);
+
+        return lines.join("\n");
+    }
+
+    formatAllDiagnostics(iconEntries) {
+        const lines = [];
+        lines.push("Fayoo XApp Status Applet - Tray Icon Diagnostics\n");
+
+        let index = 1;
+        for (let entry of iconEntries) {
+            const fields = this.getStatusIconMatchFields(entry.proxy);
+
+            const title = this.generateIconTitle(fields);
+            lines.push(`[${index}] ${title}\n`);
+
+            lines.push(this.formatIconDiagnostics(entry));
+            lines.push("");
+            index++;
+        }
+
+        return lines.join("\n");
     }
 
     setContainerOrientationClass(orientation) {
@@ -764,6 +969,13 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     }
 
     on_applet_removed_from_panel() {
+        if (this._trayInfoItem && this._trayInfoConnectId) {
+            this._trayInfoItem.menu.disconnect(this._trayInfoConnectId);
+            this._trayInfoConnectId = 0;
+            this._trayInfoItem.destroy();
+            this._trayInfoItem = null;
+        }
+
         if (this.settings) {
             this.settings.finalize();
             this.settings = null;
