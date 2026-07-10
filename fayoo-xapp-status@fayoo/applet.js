@@ -660,6 +660,21 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             subMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
             if (recommendedRule) {
+                if (this.isHiddenIconRuleAdded(recommendedRule)) {
+                    const addedItem = new PopupMenu.PopupMenuItem("Hide Rule Already Added", {
+                        reactive: false
+                    });
+                    subMenu.menu.addMenuItem(addedItem);
+                } else {
+                    const addRuleItem = new PopupMenu.PopupMenuItem("Add Recommended Hide Rule");
+                    addRuleItem.connect("activate", Lang.bind(this, () => {
+                        this.addHiddenIconRule(recommendedRule);
+                    }));
+                    subMenu.menu.addMenuItem(addRuleItem);
+                }
+            }
+
+            if (recommendedRule) {
                 const copyRuleItem = new PopupMenu.PopupMenuItem("Copy Recommended Rule");
                 copyRuleItem.connect("activate", Lang.bind(this, () => {
                     this.copyTextToClipboard(recommendedRule);
@@ -741,6 +756,48 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             St.ClipboardType.CLIPBOARD,
             text
         );
+    }
+
+    isHiddenIconRuleAdded(rule) {
+        if (!rule) {
+            return false;
+        }
+
+        const rawText = String(this.hiddenIcons || "");
+        const lowerRule = rule.trim().toLowerCase();
+
+        const existing = rawText
+            .split("\n")
+            .map(line => line.trim())
+            .filter(line => line && !line.startsWith("#"));
+
+        return existing.some(line => line.toLowerCase() === lowerRule);
+    }
+
+    addHiddenIconRule(rule) {
+        if (!rule) {
+            return false;
+        }
+
+        if (this.isHiddenIconRuleAdded(rule)) {
+            return false;
+        }
+
+        const rawText = String(this.hiddenIcons || "");
+
+        let newText;
+        if (!rawText) {
+            newText = rule;
+        } else if (rawText.endsWith("\n")) {
+            newText = rawText + rule;
+        } else {
+            newText = rawText + "\n" + rule;
+        }
+
+        this.hiddenIcons = newText;
+        this.onHiddenIconsChanged();
+
+        return true;
     }
 
     formatIconDiagnostics(icon) {

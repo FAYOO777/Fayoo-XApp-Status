@@ -8,6 +8,12 @@
 - Added per-icon and full diagnostic information copying.
 - Supported viewing effective visibility state of hidden icons.
 - Verified tray icon diagnostics on Linux Mint 22.3 with Cinnamon 6.6.7.
+- Added one-click addition of recommended hide rules from `Tray Icon Info`.
+- Preserved original user rule text format when appending rules.
+- Supported case-insensitive complete-rule deduplication.
+- Applied hide state immediately after adding a rule.
+- Showed non-clickable status when a rule already exists.
+- Verified one-click hide rules on Linux Mint 22.3 with Cinnamon 6.6.7.
 
 ## [0.1.0] - 2026-07-11
 
