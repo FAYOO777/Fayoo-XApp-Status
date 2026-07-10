@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.1.0] - 2026-07-11
+
 - Created independent applet fork `fayoo-xapp-status@fayoo` from the local system baseline `xapp-status@cinnamon.org`.
 - Created an XApp Status Applet fork with an independent UUID.
 - Preserved the system original `xapp-status@cinnamon.org` as the rollback path.

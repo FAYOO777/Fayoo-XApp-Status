@@ -1,4 +1,4 @@
-# Fayoo XApp Status
+# Fayoo XApp Status · v0.1.0
 
 Personal independent fork of Linux Mint Cinnamon's `xapp-status@cinnamon.org` applet.
 
