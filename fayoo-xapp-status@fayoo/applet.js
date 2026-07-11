@@ -661,10 +661,11 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
             if (recommendedRule) {
                 if (this.isHiddenIconRuleAdded(recommendedRule)) {
-                    const addedItem = new PopupMenu.PopupMenuItem("Hide Rule Already Added", {
-                        reactive: false
-                    });
-                    subMenu.menu.addMenuItem(addedItem);
+                    const removeItem = new PopupMenu.PopupMenuItem("Remove Exact Hide Rule");
+                    removeItem.connect("activate", Lang.bind(this, () => {
+                        this.removeHiddenIconRule(recommendedRule);
+                    }));
+                    subMenu.menu.addMenuItem(removeItem);
                 } else {
                     const addRuleItem = new PopupMenu.PopupMenuItem("Add Recommended Hide Rule");
                     addRuleItem.connect("activate", Lang.bind(this, () => {
@@ -761,20 +762,108 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         );
     }
 
+    normalizeHiddenIconRuleLine(line) {
+        const trimmed = String(line || "").trim();
+
+        if (!trimmed || trimmed.startsWith("#")) {
+            return null;
+        }
+
+        return trimmed.toLowerCase();
+    }
+
+    _parseTextLines(text) {
+        const lines = [];
+        let start = 0;
+
+        for (let i = 0; i < text.length; i++) {
+            const ch = text[i];
+
+            if (ch === "\r") {
+                if (i + 1 < text.length && text[i + 1] === "\n") {
+                    lines.push({ content: text.slice(start, i), ending: "\r\n" });
+                    start = i + 2;
+                    i++;
+                } else {
+                    lines.push({ content: text.slice(start, i), ending: "\r" });
+                    start = i + 1;
+                }
+            } else if (ch === "\n") {
+                lines.push({ content: text.slice(start, i), ending: "\n" });
+                start = i + 1;
+            }
+        }
+
+        if (start < text.length) {
+            lines.push({ content: text.slice(start), ending: "" });
+        }
+
+        return lines;
+    }
+
     isHiddenIconRuleAdded(rule) {
         if (!rule) {
             return false;
         }
 
+        const normRule = this.normalizeHiddenIconRuleLine(rule);
+        if (!normRule) {
+            return false;
+        }
+
         const rawText = String(this.hiddenIcons || "");
-        const lowerRule = rule.trim().toLowerCase();
+        const lines = rawText.split("\n");
 
-        const existing = rawText
-            .split("\n")
-            .map(line => line.trim())
-            .filter(line => line && !line.startsWith("#"));
+        return lines.some(line => {
+            const norm = this.normalizeHiddenIconRuleLine(line);
+            return norm && norm === normRule;
+        });
+    }
 
-        return existing.some(line => line.toLowerCase() === lowerRule);
+    removeHiddenIconRule(rule) {
+        if (!rule) {
+            return false;
+        }
+
+        const normRule = this.normalizeHiddenIconRuleLine(rule);
+        if (!normRule) {
+            return false;
+        }
+
+        const rawText = String(this.hiddenIcons || "");
+        if (!rawText) {
+            return false;
+        }
+
+        const originalLastHadNoEnding = rawText.length > 0 &&
+            !/[\r\n]$/.test(rawText);
+        const parsed = this._parseTextLines(rawText);
+        const remaining = [];
+        let removed = false;
+
+        for (let line of parsed) {
+            const norm = this.normalizeHiddenIconRuleLine(line.content);
+            if (norm && norm === normRule) {
+                removed = true;
+            } else {
+                remaining.push(line);
+            }
+        }
+
+        if (!removed) {
+            return false;
+        }
+
+        if (originalLastHadNoEnding && remaining.length > 0) {
+            remaining[remaining.length - 1].ending = "";
+        }
+
+        const newText = remaining.map(l => l.content + l.ending).join("");
+
+        this.hiddenIcons = newText;
+        this.onHiddenIconsChanged();
+
+        return true;
     }
 
     addHiddenIconRule(rule) {

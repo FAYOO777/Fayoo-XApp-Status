@@ -20,6 +20,12 @@
 - Kept copied diagnostic information preserving original multiline fields.
 - Recommended a stable `icon:` rule for Betterbird unread-mail status icons.
 - Verified the Betterbird recommended-rule fix on Linux Mint 22.3 with Cinnamon 6.6.7.
+- Added removal of exact hidden rules from the diagnostics menu.
+- Supported removing all duplicate exact rules at once.
+- Preserved comments, empty lines, rule order, and original newline format when removing rules.
+- Supported LF, CRLF, CR, and missing final newline while removing rules.
+- Updated icons immediately after removal through the existing effective visibility logic.
+- Verified exact hide rule removal on Linux Mint 22.3 with Cinnamon 6.6.7.
 
 ## [0.1.0] - 2026-07-11
 

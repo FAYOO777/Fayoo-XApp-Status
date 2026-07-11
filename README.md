@@ -67,10 +67,14 @@ A diagnostic menu is available to inspect all current XApp tray icon details. Ri
 - Supports adding a recommended hide rule directly from the menu (`Add Recommended Hide Rule`).
 - Multiline dynamic `name` values are not used as recommended rules; those icons fall back to a more stable `icon`, `tooltip`, or `label` rule when available.
 - Adding a rule appends it to the `hidden-icons` setting without deleting, reordering, or reformatting existing rules.
-- If the rule already exists the menu shows a non-clickable `Hide Rule Already Added` status.
+- If the recommended rule already exists the menu shows `Remove Exact Hide Rule`.
+- Removing a rule deletes only valid rule lines that case-insensitively and completely match the recommended rule.
+- All duplicate exact rules are removed at once, including lines with different casing or surrounding spaces.
+- Comments, broader rules, partial matches, rules for other fields, and unrelated lines are not removed.
+- If another rule still matches the icon after removal, the icon remains hidden.
 - Rule deduplication is case-insensitive and compares the complete rule text only.
 - Broader existing rules do not prevent adding a more specific recommended rule.
-- Automatic rule removal from the menu is not yet supported; delete rules via the applet settings.
+- The menu does not currently provide a confirmation dialog, undo action, or automatic cleanup of broader rules.
 
 ## Component Relationship
 
