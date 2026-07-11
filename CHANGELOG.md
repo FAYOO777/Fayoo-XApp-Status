@@ -2,30 +2,35 @@
 
 ## Unreleased
 
-- Added `Tray Icon Info` right-click submenu.
-- Added real-time diagnostic information for current XApp tray icons.
-- Added recommended hide rule generation.
-- Added per-icon and full diagnostic information copying.
-- Supported viewing effective visibility state of hidden icons.
-- Verified tray icon diagnostics on Linux Mint 22.3 with Cinnamon 6.6.7.
-- Added one-click addition of recommended hide rules from `Tray Icon Info`.
-- Preserved original user rule text format when appending rules.
-- Supported case-insensitive complete-rule deduplication.
-- Applied hide state immediately after adding a rule.
-- Showed non-clickable status when a rule already exists.
-- Verified one-click hide rules on Linux Mint 22.3 with Cinnamon 6.6.7.
-- Fixed multiline dynamic `name` values being incorrectly generated as hide rules.
-- Skipped multiline `name:` candidates and continued trying `icon`, `tooltip`, and `label` recommended rules.
-- Compressed multiline text into a single line for `Tray Icon Info` menu titles.
-- Kept copied diagnostic information preserving original multiline fields.
-- Recommended a stable `icon:` rule for Betterbird unread-mail status icons.
-- Verified the Betterbird recommended-rule fix on Linux Mint 22.3 with Cinnamon 6.6.7.
-- Added removal of exact hidden rules from the diagnostics menu.
-- Supported removing all duplicate exact rules at once.
-- Preserved comments, empty lines, rule order, and original newline format when removing rules.
-- Supported LF, CRLF, CR, and missing final newline while removing rules.
-- Updated icons immediately after removal through the existing effective visibility logic.
-- Verified exact hide rule removal on Linux Mint 22.3 with Cinnamon 6.6.7.
+## [0.2.0] - 2026-07-12
+
+### Added
+
+- Added the Tray Icon Info diagnostic submenu.
+- Added per-icon diagnostics for name, icon, tooltip, label, application visibility, rule-hidden state, and effective visibility.
+- Added Copy All Diagnostics and Copy Icon Diagnostics actions.
+- Added recommended hide rule generation using name, icon, tooltip, and label candidates.
+- Added Copy Recommended Rule.
+- Added Add Recommended Hide Rule with case-insensitive exact-rule deduplication.
+- Added Remove Exact Hide Rule.
+- Added removal of all duplicate exact-rule entries in one operation.
+
+### Changed
+
+- Preserved comments, empty lines, rule order, and original line endings when removing exact rules.
+- Supported LF, CRLF, CR, and files without a final newline.
+- Compressed multiline tray icon names into a single line for menu display.
+- Kept copied diagnostic fields in their original multiline form.
+
+### Fixed
+
+- Fixed multiline dynamic names producing invalid multiline name rules.
+- Multiline name candidates now fall back to icon, tooltip, or label.
+- Betterbird unread-mail indicators now recommend a stable icon rule instead of a dynamic unread-count name rule.
+
+### Compatibility
+
+- Verified on Linux Mint 22.3 with Cinnamon 6.6.7.
 
 ## [0.1.0] - 2026-07-11
 

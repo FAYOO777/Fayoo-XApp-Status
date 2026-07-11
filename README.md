@@ -1,4 +1,4 @@
-# Fayoo XApp Status · v0.1.0
+# Fayoo XApp Status · v0.2.0
 
 Personal independent fork of Linux Mint Cinnamon's `xapp-status@cinnamon.org` applet.
 
@@ -64,8 +64,10 @@ A diagnostic menu is available to inspect all current XApp tray icon details. Ri
 - Supports copying per-icon diagnostic text.
 - Supports copying a full diagnostics report for all icons.
 - The diagnostic menu is read-only and does not modify any application or icon state.
+- Recommended rule candidates are tried in this order: `name` -> `icon` -> `tooltip` -> `label`.
+- Stable single-line `name` values are preferred.
+- Multiline `name` values are not used as recommended rules; those icons fall back to a more stable `icon`, `tooltip`, or `label` rule when available.
 - Supports adding a recommended hide rule directly from the menu (`Add Recommended Hide Rule`).
-- Multiline dynamic `name` values are not used as recommended rules; those icons fall back to a more stable `icon`, `tooltip`, or `label` rule when available.
 - Adding a rule appends it to the `hidden-icons` setting without deleting, reordering, or reformatting existing rules.
 - If the recommended rule already exists the menu shows `Remove Exact Hide Rule`.
 - Removing a rule deletes only valid rule lines that case-insensitively and completely match the recommended rule.
@@ -74,6 +76,7 @@ A diagnostic menu is available to inspect all current XApp tray icon details. Ri
 - If another rule still matches the icon after removal, the icon remains hidden.
 - Rule deduplication is case-insensitive and compares the complete rule text only.
 - Broader existing rules do not prevent adding a more specific recommended rule.
+- Broad rules such as `name:t` are not automatically removed or cleaned up.
 - The menu does not currently provide a confirmation dialog, undo action, or automatic cleanup of broader rules.
 
 ## Component Relationship
