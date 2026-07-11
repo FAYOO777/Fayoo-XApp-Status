@@ -14,6 +14,12 @@
 - Applied hide state immediately after adding a rule.
 - Showed non-clickable status when a rule already exists.
 - Verified one-click hide rules on Linux Mint 22.3 with Cinnamon 6.6.7.
+- Fixed multiline dynamic `name` values being incorrectly generated as hide rules.
+- Skipped multiline `name:` candidates and continued trying `icon`, `tooltip`, and `label` recommended rules.
+- Compressed multiline text into a single line for `Tray Icon Info` menu titles.
+- Kept copied diagnostic information preserving original multiline fields.
+- Recommended a stable `icon:` rule for Betterbird unread-mail status icons.
+- Verified the Betterbird recommended-rule fix on Linux Mint 22.3 with Cinnamon 6.6.7.
 
 ## [0.1.0] - 2026-07-11
 

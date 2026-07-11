@@ -699,11 +699,12 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     }
 
     generateIconTitle(fields) {
-        if (fields.name && !/^:\d+\.\d+$/.test(fields.name)) {
-            return fields.name;
+        const cleanName = fields.name.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+        if (cleanName && !/^:\d+\.\d+$/.test(cleanName)) {
+            return cleanName;
         }
 
-        const tooltipLine = fields.tooltip.split("\n")[0].trim();
+        const tooltipLine = fields.tooltip.split("\n")[0].trim().replace(/\s+/g, " ");
         if (tooltipLine && tooltipLine.length >= 3) {
             return tooltipLine;
         }
@@ -712,8 +713,9 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             return fields.icon;
         }
 
-        if (fields.label && fields.label.length >= 3) {
-            return fields.label;
+        const cleanLabel = fields.label.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+        if (cleanLabel && cleanLabel.length >= 3) {
+            return cleanLabel;
         }
 
         return "Unnamed tray icon";
@@ -726,7 +728,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         const tooltip = fields.tooltip;
         const label = fields.label;
 
-        if (name && !/^:\d+\.\d+$/.test(name) && name.length >= 3) {
+        const nameIsMultiline = /[\r\n]/.test(name);
+        if (name && !nameIsMultiline && !/^:\d+\.\d+$/.test(name) && name.length >= 3) {
             return `name:${name}`;
         }
 
