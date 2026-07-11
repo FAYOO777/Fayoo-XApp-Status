@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- Added custom tray icon ordering through the `icon-order` setting.
+- Added exact, case-insensitive matching for `name:`, `icon:`, `tooltip:`, and `label:` rules.
+- Added support for comments, empty lines, duplicate-rule filtering, and LF/CRLF/CR input.
+- Added immediate reordering when the setting or relevant icon properties change.
+
+### Changed
+
+- Matched icons follow custom-rule priority while unmatched icons retain the existing default order.
+- Multiline fields are excluded from custom-order matching.
+
 ## [0.2.0] - 2026-07-12
 
 ### Added

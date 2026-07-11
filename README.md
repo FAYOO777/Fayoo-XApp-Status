@@ -55,6 +55,29 @@ icon:fayoo-fcitx-pinyin
 tooltip:Clash Party
 ```
 
+The applet can also place selected XApp tray icons first by rule. Add rules in the `Custom icon order` setting, one exact rule per line.
+
+- Supported prefixes: `name:`, `icon:`, `tooltip:`, `label:`
+- Earlier rules have higher priority.
+- Prefixes and field values are case-insensitive, but the full field value must match exactly.
+- Empty lines and lines beginning with `#` are ignored.
+- Invalid prefixes are ignored.
+- Rules without a prefix and fuzzy matching are not supported.
+- Multiline fields are not used for custom-order matching.
+- Icons that do not match any custom order rule keep Cinnamon's existing default order.
+- Use `Tray Icon Info` to inspect the real field values exposed by each icon.
+
+Example custom icon order rules:
+
+```text
+name:telegramdesktop
+name:wechat
+name:blueman
+icon:/opt/betterbird/chrome/icons/default/newmail.svg
+```
+
+Use the actual field value for each icon. For example, Blueman should use `name:blueman`, Betterbird unread-mail indicators should use a stable `icon:` rule, and `name:t` will not match `telegramdesktop`.
+
 A diagnostic menu is available to inspect all current XApp tray icon details. Right-click the applet and select `Tray Icon Info`.
 
 - Lists every XApp tray icon in real time, including hidden ones.

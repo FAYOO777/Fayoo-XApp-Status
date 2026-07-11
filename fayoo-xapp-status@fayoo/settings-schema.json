@@ -22,5 +22,12 @@
         "description": "Hidden tray icons",
         "height": 140,
         "tooltip": "Enter one rule per line. Supported prefixes: name:, icon:, tooltip:, label:. Matching is case-insensitive. Empty lines and lines beginning with # are ignored."
+    },
+    "icon-order": {
+        "type": "textview",
+        "default": "",
+        "description": "Custom icon order",
+        "height": 140,
+        "tooltip": "Enter one exact icon rule per line. Supported prefixes: name:, icon:, tooltip:, label:. Earlier rules appear first. Empty lines and lines beginning with # are ignored."
     }
 }
