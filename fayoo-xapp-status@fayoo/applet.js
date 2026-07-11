@@ -156,21 +156,25 @@ class XAppStatusIcon {
 
     on_properties_changed(proxy, changed_props, invalidated_props) {
         let prop_names = changed_props.deep_unpack();
+        let shouldResort = false;
 
         if ('IconName' in prop_names) {
             this.setIconName(proxy.icon_name);
+            shouldResort = true;
         }
         if ('TooltipText' in prop_names) {
             this.setTooltipText(proxy.tooltip_text);
+            shouldResort = true;
         }
         if ('Label' in prop_names) {
             this.setLabel(proxy.label);
+            shouldResort = true;
         }
         if ('Visible' in prop_names) {
             this.setVisible(proxy.visible);
         }
         if ('Name' in prop_names) {
-            this.applet.sortIcons();
+            shouldResort = true;
         }
 
         if ('Name' in prop_names ||
@@ -178,6 +182,10 @@ class XAppStatusIcon {
             'TooltipText' in prop_names ||
             'Label' in prop_names) {
             this.updateEffectiveVisibility();
+        }
+
+        if (shouldResort) {
+            this.applet.sortIcons();
         }
 
         if ('PrimaryMenuIsOpen' in prop_names) {
@@ -439,6 +447,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         this.statusIcons = {};
         this.hiddenIconRules = [];
+        this.iconOrderRules = [];
 
         /* This doesn't really work 100% because applets get reloaded and we end up losing this
          * list. Not that big a deal in practice*/
@@ -473,8 +482,14 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             "hiddenIcons",
             () => this.onHiddenIconsChanged()
         );
+        this.settings.bind(
+            "icon-order",
+            "iconOrder",
+            () => this.onIconOrderChanged()
+        );
 
         this.rebuildHiddenIconRules();
+        this.rebuildIconOrderRules();
 
         this.buildTrayInfoMenuItem();
     }
@@ -577,6 +592,81 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         for (let key in this.statusIcons) {
             this.statusIcons[key].updateEffectiveVisibility();
         }
+    }
+
+    rebuildIconOrderRules() {
+        const prefixes = ["name", "icon", "tooltip", "label"];
+        const seen = Object.create(null);
+        const rules = [];
+        const lines = String(this.iconOrder || "").split(/\r\n|\n|\r/);
+
+        for (let line of lines) {
+            const trimmed = line.trim();
+
+            if (!trimmed || trimmed.startsWith("#")) {
+                continue;
+            }
+
+            const separatorIndex = trimmed.indexOf(":");
+
+            if (separatorIndex <= 0) {
+                continue;
+            }
+
+            const field = trimmed.slice(0, separatorIndex).trim().toLowerCase();
+
+            if (prefixes.indexOf(field) === -1) {
+                continue;
+            }
+
+            const value = trimmed.slice(separatorIndex + 1).trim().toLowerCase();
+
+            if (!value) {
+                continue;
+            }
+
+            const key = `${field}:${value}`;
+
+            if (seen[key]) {
+                continue;
+            }
+
+            seen[key] = true;
+            rules.push({
+                field,
+                value,
+                priority: rules.length
+            });
+        }
+
+        this.iconOrderRules = rules;
+    }
+
+    onIconOrderChanged() {
+        this.rebuildIconOrderRules();
+        this.sortIcons();
+    }
+
+    getIconOrderPriority(statusIcon) {
+        if (!this.iconOrderRules || this.iconOrderRules.length === 0) {
+            return null;
+        }
+
+        const fields = this.getStatusIconMatchFields(statusIcon.proxy);
+        const normalizedFields = {};
+
+        for (let field in fields) {
+            const value = String(fields[field] || "").trim();
+            normalizedFields[field] = /[\r\n]/.test(value) ? null : value.toLowerCase();
+        }
+
+        for (let rule of this.iconOrderRules) {
+            if (normalizedFields[rule.field] && normalizedFields[rule.field] === rule.value) {
+                return rule.priority;
+            }
+        }
+
+        return null;
     }
 
     buildTrayInfoMenuItem() {
@@ -1071,14 +1161,52 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     sortIcons() {
         this.onSystrayRolesChanged();
 
-        let icon_list = []
+        let icon_list = [];
+        let insertionIndexByKey = Object.create(null);
 
         for (let i in this.statusIcons) {
+            insertionIndexByKey[i] = icon_list.length;
             icon_list.push(this.statusIcons[i]);
         }
 
-        icon_list.sort(this._sortFunc);
-        icon_list.reverse()
+        let defaultSorted = icon_list.slice();
+        defaultSorted.sort(this._sortFunc);
+
+        let defaultIndexByKey = Object.create(null);
+        for (let i = 0; i < defaultSorted.length; i++) {
+            defaultIndexByKey[this.getKey(defaultSorted[i].proxy)] = i;
+        }
+
+        icon_list.sort((a, b) => {
+            const aPriority = this.getIconOrderPriority(a);
+            const bPriority = this.getIconOrderPriority(b);
+            const aMatched = aPriority !== null;
+            const bMatched = bPriority !== null;
+
+            if (aMatched && !bMatched) {
+                return -1;
+            }
+
+            if (bMatched && !aMatched) {
+                return 1;
+            }
+
+            if (aMatched && bMatched && aPriority !== bPriority) {
+                return aPriority - bPriority;
+            }
+
+            const aKey = this.getKey(a.proxy);
+            const bKey = this.getKey(b.proxy);
+            const defaultCompare = defaultIndexByKey[aKey] - defaultIndexByKey[bKey];
+
+            if (defaultCompare !== 0) {
+                return defaultCompare;
+            }
+
+            return insertionIndexByKey[aKey] - insertionIndexByKey[bKey];
+        });
+
+        icon_list.reverse();
 
         for (let icon of icon_list) {
             this.manager_container.set_child_at_index(icon.actor, 0);
