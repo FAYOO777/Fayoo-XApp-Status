@@ -72,3 +72,36 @@
 .fayoo-xapp-status-manager-eye-button-disabled {
     color: #777777;
 }
+
+.fayoo-xapp-status-manager-drag-handle {
+    min-width: 28px;
+    padding: 4px 6px;
+}
+
+.fayoo-xapp-status-manager-drag-handle-disabled {
+    color: #777777;
+}
+
+.fayoo-xapp-status-manager-row-dragging {
+    opacity: 120;
+}
+
+.fayoo-xapp-status-manager-drop-hover {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.fayoo-xapp-status-manager-drop-zone {
+    padding: 7px 8px;
+    border-radius: 4px;
+    color: #999999;
+}
+
+.fayoo-xapp-status-manager-remove-zone {
+    margin-top: 4px;
+}
+
+.fayoo-xapp-status-manager-drag-actor {
+    spacing: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+}

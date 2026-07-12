@@ -16,6 +16,7 @@ const GLib = imports.gi.GLib;
 const PopupMenu = imports.ui.popupMenu;
 const Tooltips = imports.ui.tooltips;
 const ModalDialog = imports.ui.modalDialog;
+const DND = imports.ui.dnd;
 
 const HORIZONTAL_STYLE = 'padding-left: 2px; padding-right: 2px; padding-top: 0; padding-bottom: 0';
 const VERTICAL_STYLE = 'padding-left: 0; padding-right: 0; padding-top: 2px; padding-bottom: 2px';
@@ -460,6 +461,10 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         this._trayIconManagerContent = null;
         this._trayIconManagerTooltips = [];
         this._trayIconManagerRefreshId = 0;
+        this._managerDragging = false;
+        this._managerRefreshPending = false;
+        this._managerCurrentDropTarget = null;
+        this._managerDragSource = null;
 
         /* This doesn't really work 100% because applets get reloaded and we end up losing this
          * list. Not that big a deal in practice*/
@@ -713,6 +718,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 field,
                 value,
                 rule: normalized,
+                rawRule: String(entry || "").trim(),
+                normalizedRule: normalized,
                 priority: rules.length,
                 source: "managed"
             });
@@ -720,6 +727,104 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         this.managedIconOrderRules = rules;
         this.rebuildEffectiveIconOrderRules();
+    }
+
+    getManagedIconOrderRawRules() {
+        return Array.isArray(this.managedIconOrder)
+            ? this.managedIconOrder.slice()
+            : [];
+    }
+
+    setManagedIconOrder(newRules) {
+        this.managedIconOrder = Array.isArray(newRules) ? newRules.slice() : [];
+        this.rebuildManagedIconOrderRules();
+        this.sortIcons();
+        this.scheduleTrayIconManagerRefresh();
+    }
+
+    arraysAreEqual(a, b) {
+        if (a.length !== b.length) {
+            return false;
+        }
+
+        for (let i = 0; i < a.length; i++) {
+            if (a[i] !== b[i]) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    buildManagedOrderAfterInsert(sourceRawRule, sourceNormalizedRule, targetNormalizedRule) {
+        const originalRules = this.getManagedIconOrderRawRules();
+        const sourceRaw = String(sourceRawRule || "").trim();
+        const sourceNormalized = sourceNormalizedRule || this.normalizeIconOrderRuleLine(sourceRaw);
+
+        if (!sourceRaw || !sourceNormalized) {
+            return null;
+        }
+
+        if (targetNormalizedRule && targetNormalizedRule === sourceNormalized) {
+            return originalRules;
+        }
+
+        const withoutSource = [];
+        let insertIndex = null;
+
+        for (let rule of originalRules) {
+            const normalized = this.normalizeIconOrderRuleLine(rule);
+
+            if (normalized === sourceNormalized) {
+                continue;
+            }
+
+            if (targetNormalizedRule && normalized === targetNormalizedRule && insertIndex === null) {
+                insertIndex = withoutSource.length;
+            }
+
+            withoutSource.push(rule);
+        }
+
+        if (targetNormalizedRule && insertIndex === null) {
+            return null;
+        }
+
+        const nextRules = withoutSource.slice();
+        nextRules.splice(targetNormalizedRule ? insertIndex : nextRules.length, 0, sourceRaw);
+
+        return nextRules;
+    }
+
+    insertManagedIconRule(sourceRawRule, sourceNormalizedRule, targetNormalizedRule) {
+        const nextRules = this.buildManagedOrderAfterInsert(sourceRawRule, sourceNormalizedRule, targetNormalizedRule);
+
+        if (!nextRules) {
+            return false;
+        }
+
+        if (this.arraysAreEqual(this.getManagedIconOrderRawRules(), nextRules)) {
+            return true;
+        }
+
+        this.setManagedIconOrder(nextRules);
+        return true;
+    }
+
+    removeManagedIconRule(sourceNormalizedRule) {
+        if (!sourceNormalizedRule) {
+            return false;
+        }
+
+        const originalRules = this.getManagedIconOrderRawRules();
+        const nextRules = originalRules.filter(rule => this.normalizeIconOrderRuleLine(rule) !== sourceNormalizedRule);
+
+        if (this.arraysAreEqual(originalRules, nextRules)) {
+            return true;
+        }
+
+        this.setManagedIconOrder(nextRules);
+        return true;
     }
 
     rebuildEffectiveIconOrderRules() {
@@ -1219,58 +1324,100 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         return lines.join("\n");
     }
 
+    statusIconMatchesOrderRule(statusIcon, rule) {
+        if (!statusIcon || !rule) {
+            return false;
+        }
+
+        const fields = this.getStatusIconMatchFields(statusIcon.proxy);
+        const value = String(fields[rule.field] || "").trim();
+
+        if (!value || /[\r\n]/.test(value)) {
+            return false;
+        }
+
+        return value.toLowerCase() === rule.value;
+    }
+
+    getActiveTrayIconManagerEntry(key, icon) {
+        const fields = this.getStatusIconMatchFields(icon.proxy);
+        const orderRule = this.getStableIconRule(icon.proxy);
+        const hideRule = this.getRecommendedRule(icon.proxy);
+        const orderMatch = this.getIconOrderMatch(icon);
+        const hiddenByAnyRule = this.isStatusIconHidden(icon.proxy);
+        const exactRulePresent = Boolean(hideRule) && this.isHiddenIconRuleAdded(hideRule);
+        const manualPriority = orderMatch && orderMatch.source === "manual"
+            ? orderMatch.sourcePriority
+            : null;
+
+        return {
+            rowType: "other",
+            icon,
+            key,
+            rawRule: orderRule,
+            normalizedRule: this.normalizeIconOrderRuleLine(orderRule),
+            orderRule,
+            hideRule,
+            displayIcon: fields.icon,
+            displayTitle: this.generateIconTitle(fields),
+            applicationVisible: Boolean(icon.applicationVisible),
+            hiddenByAnyRule,
+            exactRulePresent,
+            hiddenByOtherRule: hiddenByAnyRule && !exactRulePresent,
+            effectiveVisible: Boolean(icon.applicationVisible) && !hiddenByAnyRule,
+            manualPriority,
+            advancedOrdered: manualPriority !== null,
+            matchedIcons: [icon],
+            active: true,
+            unavailable: false,
+            multipleMatches: false
+        };
+    }
+
     getTrayIconManagerEntries() {
-        const entries = [];
-        const activeOrderRules = Object.create(null);
+        const activeEntries = [];
 
         for (let key in this.statusIcons) {
-            const icon = this.statusIcons[key];
-            const fields = this.getStatusIconMatchFields(icon.proxy);
-            const orderRule = this.getStableIconRule(icon.proxy);
-            const hideRule = this.getRecommendedRule(icon.proxy);
-            const normalizedOrderRule = this.normalizeIconOrderRuleLine(orderRule);
-            const hiddenByAnyRule = this.isStatusIconHidden(icon.proxy);
-            const exactRulePresent = Boolean(hideRule) && this.isHiddenIconRuleAdded(hideRule);
-            const orderMatch = this.getIconOrderMatch(icon);
-            let managedPriority = null;
-            let manualPriority = null;
+            activeEntries.push(this.getActiveTrayIconManagerEntry(key, this.statusIcons[key]));
+        }
 
-            if (orderMatch) {
-                if (orderMatch.source === "managed" && normalizedOrderRule === orderMatch.rule) {
-                    managedPriority = orderMatch.sourcePriority;
-                } else if (orderMatch.source === "manual") {
-                    manualPriority = orderMatch.sourcePriority;
-                }
+        const managedMatchedKeys = Object.create(null);
+        const managedEntries = [];
+
+        for (let rule of this.managedIconOrderRules || []) {
+            const matchedEntries = activeEntries.filter(entry => this.statusIconMatchesOrderRule(entry.icon, rule));
+            const multipleMatches = matchedEntries.length > 1;
+            const firstEntry = matchedEntries.length > 0 ? matchedEntries[0] : null;
+
+            for (let entry of matchedEntries) {
+                managedMatchedKeys[entry.key] = true;
             }
 
-            if (normalizedOrderRule) {
-                activeOrderRules[normalizedOrderRule] = true;
-            }
-
-            entries.push({
-                icon,
-                key,
-                title: this.generateIconTitle(fields),
-                iconName: fields.icon,
-                orderRule,
-                hideRule,
-                applicationVisible: Boolean(icon.applicationVisible),
-                hiddenByAnyRule,
-                exactRulePresent,
-                hiddenByOtherRule: hiddenByAnyRule && !exactRulePresent,
-                effectiveVisible: Boolean(icon.applicationVisible) && !hiddenByAnyRule,
-                managedPriority,
-                manualPriority,
-                unavailable: false
+            managedEntries.push({
+                rowType: "managed",
+                rawRule: rule.rawRule,
+                normalizedRule: rule.normalizedRule,
+                managedPriority: rule.priority,
+                matchedIcons: matchedEntries.map(entry => entry.icon),
+                active: matchedEntries.length > 0,
+                displayIcon: firstEntry ? firstEntry.displayIcon : "",
+                displayTitle: firstEntry ? firstEntry.displayTitle : rule.rawRule,
+                applicationVisible: firstEntry ? firstEntry.applicationVisible : false,
+                orderRule: rule.rawRule,
+                hideRule: !multipleMatches && firstEntry ? firstEntry.hideRule : null,
+                hiddenByAnyRule: matchedEntries.some(entry => entry.hiddenByAnyRule),
+                exactRulePresent: !multipleMatches && firstEntry ? firstEntry.exactRulePresent : false,
+                hiddenByOtherRule: !multipleMatches && firstEntry ? firstEntry.hiddenByOtherRule : false,
+                effectiveVisible: firstEntry ? firstEntry.effectiveVisible : false,
+                manualPriority: null,
+                advancedOrdered: false,
+                unavailable: matchedEntries.length === 0,
+                multipleMatches
             });
         }
 
-        const managedEntries = entries
-            .filter(entry => entry.managedPriority !== null)
-            .sort((a, b) => a.managedPriority - b.managedPriority || this._sortFunc(a.icon, b.icon));
-
-        const otherEntries = entries
-            .filter(entry => entry.managedPriority === null)
+        const otherEntries = activeEntries
+            .filter(entry => !managedMatchedKeys[entry.key])
             .sort((a, b) => {
                 if (a.manualPriority !== null && b.manualPriority === null) {
                     return -1;
@@ -1287,35 +1434,9 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 return this._sortFunc(a.icon, b.icon);
             });
 
-        const unavailableEntries = [];
-
-        for (let rule of this.managedIconOrderRules || []) {
-            const normalized = `${rule.field}:${rule.value}`;
-
-            if (activeOrderRules[normalized]) {
-                continue;
-            }
-
-            unavailableEntries.push({
-                title: rule.rule,
-                iconName: "",
-                orderRule: rule.rule,
-                hideRule: null,
-                applicationVisible: false,
-                hiddenByAnyRule: false,
-                exactRulePresent: false,
-                hiddenByOtherRule: false,
-                effectiveVisible: false,
-                managedPriority: rule.priority,
-                manualPriority: null,
-                unavailable: true
-            });
-        }
-
         return {
             managedEntries,
-            otherEntries,
-            unavailableEntries
+            otherEntries
         };
     }
 
@@ -1367,9 +1488,11 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         this._trayIconManagerClosedId = dialog.connect("closed", Lang.bind(this, () => {
             this.cancelTrayIconManagerRefresh();
+            this.clearTrayIconManagerDragState();
         }));
         this._trayIconManagerDestroyId = dialog.connect("destroy", Lang.bind(this, () => {
             this.cancelTrayIconManagerRefresh();
+            this.clearTrayIconManagerDragState();
             this.destroyTrayIconManagerTooltips();
             this._trayIconManagerDialog = null;
             this._trayIconManagerContent = null;
@@ -1398,12 +1521,11 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         this._trayIconManagerContent.destroy_all_children();
 
         const groups = this.getTrayIconManagerEntries();
-        this.addTrayIconManagerSection("Managed order", groups.managedEntries, "No managed entries yet.");
-        this.addTrayIconManagerSection("Other active icons", groups.otherEntries, "No active tray icons.");
-        this.addTrayIconManagerSection("Unavailable managed entries", groups.unavailableEntries, "All managed entries are currently active.");
+        this.addTrayIconManagerSection("Managed order", groups.managedEntries, "No managed entries yet.", "managed");
+        this.addTrayIconManagerSection("Other active icons", groups.otherEntries, "No active tray icons.", "other");
     }
 
-    addTrayIconManagerSection(title, entries, emptyText) {
+    addTrayIconManagerSection(title, entries, emptyText, sectionType) {
         const section = new St.BoxLayout({
             vertical: true,
             style_class: "fayoo-xapp-status-manager-section"
@@ -1425,20 +1547,29 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             }
         }
 
+        if (sectionType === "managed") {
+            section.add_actor(this.createTrayIconManagerAppendDropZone(entries.length === 0));
+        } else if (sectionType === "other") {
+            section.add_actor(this.createTrayIconManagerRemoveDropZone());
+        }
+
         this._trayIconManagerContent.add_actor(section);
     }
 
     createTrayIconManagerRow(entry) {
         const row = new St.BoxLayout({
             vertical: false,
+            reactive: true,
             style_class: entry.unavailable
                 ? "fayoo-xapp-status-manager-row fayoo-xapp-status-manager-row-unavailable"
                 : "fayoo-xapp-status-manager-row"
         });
+        row._delegate = this.createTrayIconManagerDropTarget("before", entry, row);
 
+        row.add_actor(this.createTrayIconManagerDragHandle(entry, row));
         row.add_actor(this.createTrayIconManagerEyeButton(entry));
 
-        const iconName = entry.iconName && entry.iconName.indexOf("/") === -1 ? entry.iconName : "image-missing";
+        const iconName = entry.displayIcon && entry.displayIcon.indexOf("/") === -1 ? entry.displayIcon : "image-missing";
         row.add_actor(new St.Icon({
             icon_name: iconName,
             icon_type: St.IconType.FULLCOLOR,
@@ -1454,7 +1585,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         const title = new St.Label({
             style_class: "fayoo-xapp-status-manager-row-title",
-            text: entry.title
+            text: entry.displayTitle
         });
         title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         textBox.add_actor(title);
@@ -1462,6 +1593,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         const detailParts = [];
         if (entry.unavailable) {
             detailParts.push("Not currently active");
+        } else if (entry.multipleMatches) {
+            detailParts.push(`${entry.matchedIcons.length} active icons`);
         } else {
             detailParts.push(entry.effectiveVisible ? "Visible" : "Hidden");
             if (!entry.applicationVisible) {
@@ -1469,6 +1602,9 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             }
             if (entry.hiddenByOtherRule) {
                 detailParts.push("Hidden by another rule");
+            }
+            if (entry.advancedOrdered) {
+                detailParts.push("Ordered by advanced rule");
             }
         }
 
@@ -1497,6 +1633,218 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         return row;
     }
 
+    createTrayIconManagerDragHandle(entry, row) {
+        const draggable = entry.rowType === "managed" || Boolean(entry.orderRule);
+        const handle = new St.Button({
+            label: "☰",
+            reactive: true,
+            can_focus: draggable,
+            track_hover: true,
+            style_class: draggable
+                ? "fayoo-xapp-status-manager-drag-handle"
+                : "fayoo-xapp-status-manager-drag-handle fayoo-xapp-status-manager-drag-handle-disabled"
+        });
+
+        const tooltipText = draggable ? "Drag to reorder" : "No stable order identifier";
+        const tooltip = new Tooltips.Tooltip(handle, tooltipText);
+        this._trayIconManagerTooltips.push(tooltip);
+
+        if (!draggable) {
+            return handle;
+        }
+
+        const source = this.createTrayIconManagerDragSource(entry, row, handle);
+        handle._delegate = source;
+        const draggableHandle = DND.makeDraggable(handle);
+        draggableHandle.connect("drag-begin", Lang.bind(this, () => this.onTrayIconManagerDragBegin(source)));
+        draggableHandle.connect("drag-cancelled", Lang.bind(this, () => this.onTrayIconManagerDragFinished(source)));
+        draggableHandle.connect("drag-end", Lang.bind(this, () => this.onTrayIconManagerDragFinished(source)));
+
+        return handle;
+    }
+
+    createTrayIconManagerDragSource(entry, row, handle) {
+        return {
+            actor: handle,
+            rowActor: row,
+            sourceType: entry.rowType,
+            rawRule: entry.rawRule || entry.orderRule,
+            normalizedRule: entry.normalizedRule || this.normalizeIconOrderRuleLine(entry.orderRule),
+            originalManagedIndex: entry.rowType === "managed" ? entry.managedPriority : -1,
+            displayTitle: entry.displayTitle,
+            displayIcon: entry.displayIcon,
+
+            getDragActor: () => this.createTrayIconManagerDragActor(entry),
+            getDragActorSource: () => row
+        };
+    }
+
+    createTrayIconManagerDragActor(entry) {
+        const actor = new St.BoxLayout({
+            vertical: false,
+            style_class: "fayoo-xapp-status-manager-drag-actor"
+        });
+        const iconName = entry.displayIcon && entry.displayIcon.indexOf("/") === -1 ? entry.displayIcon : "image-missing";
+        actor.add_actor(new St.Icon({
+            icon_name: iconName,
+            icon_type: St.IconType.FULLCOLOR,
+            icon_size: 22
+        }));
+        const textBox = new St.BoxLayout({ vertical: true });
+        const title = new St.Label({ text: entry.displayTitle || "Tray icon" });
+        title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        textBox.add_actor(title);
+        const rule = new St.Label({
+            style_class: "fayoo-xapp-status-manager-row-detail",
+            text: entry.orderRule || entry.rawRule || "No stable order identifier"
+        });
+        rule.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        textBox.add_actor(rule);
+        actor.add_actor(textBox);
+
+        return actor;
+    }
+
+    createTrayIconManagerAppendDropZone(isEmpty) {
+        const zone = new St.BoxLayout({
+            vertical: false,
+            reactive: true,
+            style_class: "fayoo-xapp-status-manager-drop-zone"
+        });
+        zone.add_actor(new St.Label({
+            text: isEmpty ? "Drop here to add to managed order" : "Drop here to append"
+        }));
+        zone._delegate = this.createTrayIconManagerDropTarget("append", null, zone);
+
+        return zone;
+    }
+
+    createTrayIconManagerRemoveDropZone() {
+        const zone = new St.BoxLayout({
+            vertical: false,
+            reactive: true,
+            style_class: "fayoo-xapp-status-manager-drop-zone fayoo-xapp-status-manager-remove-zone"
+        });
+        zone.add_actor(new St.Label({ text: "Drop here to remove from managed order" }));
+        zone._delegate = this.createTrayIconManagerDropTarget("remove", null, zone);
+
+        return zone;
+    }
+
+    createTrayIconManagerDropTarget(targetType, entry, targetActor) {
+        return {
+            handleDragOver: (source, actor, x, y, time) => {
+                if (!this.isTrayIconManagerDragSource(source)) {
+                    return DND.DragMotionResult.CONTINUE;
+                }
+
+                if (targetType === "remove") {
+                    if (source.sourceType !== "managed") {
+                        return DND.DragMotionResult.NO_DROP;
+                    }
+
+                    this.setTrayIconManagerDropTarget(targetActor);
+                    return DND.DragMotionResult.MOVE_DROP;
+                }
+
+                if (!source.rawRule || !source.normalizedRule) {
+                    return DND.DragMotionResult.NO_DROP;
+                }
+
+                if (targetType === "before" && (!entry || entry.rowType !== "managed" || !entry.normalizedRule)) {
+                    return DND.DragMotionResult.NO_DROP;
+                }
+
+                this.setTrayIconManagerDropTarget(targetActor);
+                return DND.DragMotionResult.MOVE_DROP;
+            },
+
+            handleDragOut: () => {
+                if (this._managerCurrentDropTarget === targetActor) {
+                    this.clearTrayIconManagerDropTarget();
+                }
+            },
+
+            acceptDrop: (source, actor, x, y, time) => {
+                if (!this.isTrayIconManagerDragSource(source)) {
+                    return false;
+                }
+
+                this.clearTrayIconManagerDropTarget();
+
+                if (targetType === "remove") {
+                    if (source.sourceType !== "managed") {
+                        return false;
+                    }
+
+                    return this.removeManagedIconRule(source.normalizedRule);
+                }
+
+                if (!source.rawRule || !source.normalizedRule) {
+                    return false;
+                }
+
+                const targetNormalizedRule = targetType === "before" && entry ? entry.normalizedRule : null;
+                return this.insertManagedIconRule(source.rawRule, source.normalizedRule, targetNormalizedRule);
+            }
+        };
+    }
+
+    isTrayIconManagerDragSource(source) {
+        return Boolean(source &&
+            (source.sourceType === "managed" || source.sourceType === "other") &&
+            source.normalizedRule);
+    }
+
+    setTrayIconManagerDropTarget(actor) {
+        if (this._managerCurrentDropTarget === actor) {
+            return;
+        }
+
+        this.clearTrayIconManagerDropTarget();
+        this._managerCurrentDropTarget = actor;
+
+        if (actor && !actor.is_finalized()) {
+            actor.add_style_class_name("fayoo-xapp-status-manager-drop-hover");
+        }
+    }
+
+    clearTrayIconManagerDropTarget() {
+        if (this._managerCurrentDropTarget && !this._managerCurrentDropTarget.is_finalized()) {
+            this._managerCurrentDropTarget.remove_style_class_name("fayoo-xapp-status-manager-drop-hover");
+        }
+
+        this._managerCurrentDropTarget = null;
+    }
+
+    onTrayIconManagerDragBegin(source) {
+        this._managerDragging = true;
+        this._managerDragSource = source;
+
+        if (source.rowActor && !source.rowActor.is_finalized()) {
+            source.rowActor.add_style_class_name("fayoo-xapp-status-manager-row-dragging");
+        }
+    }
+
+    onTrayIconManagerDragFinished(source) {
+        if (!this._managerDragging) {
+            return;
+        }
+
+        if (source && source.rowActor && !source.rowActor.is_finalized()) {
+            source.rowActor.remove_style_class_name("fayoo-xapp-status-manager-row-dragging");
+        }
+
+        this.clearTrayIconManagerDropTarget();
+        this._managerDragging = false;
+        this._managerDragSource = null;
+
+        if (this._managerRefreshPending) {
+            this._managerRefreshPending = false;
+            this.scheduleTrayIconManagerRefresh();
+        }
+    }
+
     createTrayIconManagerEyeButton(entry) {
         let label = entry.effectiveVisible ? "Hide" : "Show";
         let tooltipText = entry.effectiveVisible ? "Hide this tray icon" : "Show this tray icon";
@@ -1506,6 +1854,10 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         if (entry.unavailable) {
             label = "-";
             tooltipText = "Not currently active";
+            disabled = true;
+        } else if (entry.multipleMatches) {
+            label = "-";
+            tooltipText = "Multiple icons match this order rule";
             disabled = true;
         } else if (!entry.hideRule) {
             label = "-";
@@ -1554,6 +1906,11 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             return;
         }
 
+        if (this._managerDragging) {
+            this._managerRefreshPending = true;
+            return;
+        }
+
         if (this._trayIconManagerDialog.state !== ModalDialog.State.OPENED &&
             this._trayIconManagerDialog.state !== ModalDialog.State.OPENING) {
             return;
@@ -1576,6 +1933,21 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             Mainloop.source_remove(this._trayIconManagerRefreshId);
             this._trayIconManagerRefreshId = 0;
         }
+
+        this._managerRefreshPending = false;
+    }
+
+    clearTrayIconManagerDragState() {
+        if (this._managerDragSource &&
+            this._managerDragSource.rowActor &&
+            !this._managerDragSource.rowActor.is_finalized()) {
+            this._managerDragSource.rowActor.remove_style_class_name("fayoo-xapp-status-manager-row-dragging");
+        }
+
+        this.clearTrayIconManagerDropTarget();
+        this._managerDragging = false;
+        this._managerRefreshPending = false;
+        this._managerDragSource = null;
     }
 
     setContainerOrientationClass(orientation) {
@@ -1808,6 +2180,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     on_applet_removed_from_panel() {
         if (this._trayIconManagerDialog) {
             this.cancelTrayIconManagerRefresh();
+            this.clearTrayIconManagerDragState();
             this.destroyTrayIconManagerTooltips();
             this._trayIconManagerDialog.destroy();
             this._trayIconManagerDialog = null;
