@@ -3,6 +3,7 @@ const Lang = imports.lang;
 const St = imports.gi.St;
 const Gio = imports.gi.Gio;
 const Clutter = imports.gi.Clutter;
+const Pango = imports.gi.Pango;
 const Interfaces = imports.misc.interfaces;
 const Applet = imports.ui.applet;
 const Main = imports.ui.main;
@@ -14,6 +15,7 @@ const XApp = imports.gi.XApp;
 const GLib = imports.gi.GLib;
 const PopupMenu = imports.ui.popupMenu;
 const Tooltips = imports.ui.tooltips;
+const ModalDialog = imports.ui.modalDialog;
 
 const HORIZONTAL_STYLE = 'padding-left: 2px; padding-right: 2px; padding-top: 0; padding-bottom: 0';
 const VERTICAL_STYLE = 'padding-left: 0; padding-right: 0; padding-top: 2px; padding-bottom: 2px';
@@ -186,6 +188,10 @@ class XAppStatusIcon {
 
         if (shouldResort) {
             this.applet.sortIcons();
+        }
+
+        if (shouldResort || 'Visible' in prop_names) {
+            this.applet.scheduleTrayIconManagerRefresh();
         }
 
         if ('PrimaryMenuIsOpen' in prop_names) {
@@ -447,7 +453,13 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         this.statusIcons = {};
         this.hiddenIconRules = [];
+        this.managedIconOrderRules = [];
         this.iconOrderRules = [];
+        this.effectiveIconOrderRules = [];
+        this._trayIconManagerDialog = null;
+        this._trayIconManagerContent = null;
+        this._trayIconManagerTooltips = [];
+        this._trayIconManagerRefreshId = 0;
 
         /* This doesn't really work 100% because applets get reloaded and we end up losing this
          * list. Not that big a deal in practice*/
@@ -487,11 +499,18 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             "iconOrder",
             () => this.onIconOrderChanged()
         );
+        this.settings.bind(
+            "managed-icon-order",
+            "managedIconOrder",
+            () => this.onManagedIconOrderChanged()
+        );
 
         this.rebuildHiddenIconRules();
+        this.rebuildManagedIconOrderRules();
         this.rebuildIconOrderRules();
 
         this.buildTrayInfoMenuItem();
+        this.buildTrayManagerMenuItem();
     }
 
     getScaledIconSize(baseSize) {
@@ -592,6 +611,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         for (let key in this.statusIcons) {
             this.statusIcons[key].updateEffectiveVisibility();
         }
+
+        this.scheduleTrayIconManagerRefresh();
     }
 
     rebuildIconOrderRules() {
@@ -640,15 +661,117 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         }
 
         this.iconOrderRules = rules;
+        this.rebuildEffectiveIconOrderRules();
+    }
+
+    normalizeIconOrderRuleLine(line) {
+        const trimmed = String(line || "").trim();
+
+        if (!trimmed || trimmed.startsWith("#")) {
+            return null;
+        }
+
+        const separatorIndex = trimmed.indexOf(":");
+
+        if (separatorIndex <= 0) {
+            return null;
+        }
+
+        const field = trimmed.slice(0, separatorIndex).trim().toLowerCase();
+
+        if (["name", "icon", "tooltip", "label"].indexOf(field) === -1) {
+            return null;
+        }
+
+        const value = trimmed.slice(separatorIndex + 1).trim();
+
+        if (!value || /[\r\n]/.test(value)) {
+            return null;
+        }
+
+        return `${field}:${value.toLowerCase()}`;
+    }
+
+    rebuildManagedIconOrderRules() {
+        const rules = [];
+        const seen = Object.create(null);
+        const entries = Array.isArray(this.managedIconOrder) ? this.managedIconOrder : [];
+
+        for (let entry of entries) {
+            const normalized = this.normalizeIconOrderRuleLine(entry);
+
+            if (!normalized || seen[normalized]) {
+                continue;
+            }
+
+            const separatorIndex = normalized.indexOf(":");
+            const field = normalized.slice(0, separatorIndex);
+            const value = normalized.slice(separatorIndex + 1);
+
+            seen[normalized] = true;
+            rules.push({
+                field,
+                value,
+                rule: normalized,
+                priority: rules.length,
+                source: "managed"
+            });
+        }
+
+        this.managedIconOrderRules = rules;
+        this.rebuildEffectiveIconOrderRules();
+    }
+
+    rebuildEffectiveIconOrderRules() {
+        const rules = [];
+        const managedSeen = Object.create(null);
+
+        for (let rule of this.managedIconOrderRules || []) {
+            managedSeen[`${rule.field}:${rule.value}`] = true;
+            rules.push({
+                field: rule.field,
+                value: rule.value,
+                rule: `${rule.field}:${rule.value}`,
+                priority: rules.length,
+                source: "managed",
+                sourcePriority: rule.priority
+            });
+        }
+
+        for (let rule of this.iconOrderRules || []) {
+            const key = `${rule.field}:${rule.value}`;
+
+            if (managedSeen[key]) {
+                continue;
+            }
+
+            rules.push({
+                field: rule.field,
+                value: rule.value,
+                rule: key,
+                priority: rules.length,
+                source: "manual",
+                sourcePriority: rule.priority
+            });
+        }
+
+        this.effectiveIconOrderRules = rules;
+    }
+
+    onManagedIconOrderChanged() {
+        this.rebuildManagedIconOrderRules();
+        this.sortIcons();
+        this.scheduleTrayIconManagerRefresh();
     }
 
     onIconOrderChanged() {
         this.rebuildIconOrderRules();
         this.sortIcons();
+        this.scheduleTrayIconManagerRefresh();
     }
 
-    getIconOrderPriority(statusIcon) {
-        if (!this.iconOrderRules || this.iconOrderRules.length === 0) {
+    getIconOrderMatch(statusIcon) {
+        if (!this.effectiveIconOrderRules || this.effectiveIconOrderRules.length === 0) {
             return null;
         }
 
@@ -660,13 +783,19 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             normalizedFields[field] = /[\r\n]/.test(value) ? null : value.toLowerCase();
         }
 
-        for (let rule of this.iconOrderRules) {
+        for (let rule of this.effectiveIconOrderRules) {
             if (normalizedFields[rule.field] && normalizedFields[rule.field] === rule.value) {
-                return rule.priority;
+                return rule;
             }
         }
 
         return null;
+    }
+
+    getIconOrderPriority(statusIcon) {
+        const match = this.getIconOrderMatch(statusIcon);
+
+        return match ? match.priority : null;
     }
 
     buildTrayInfoMenuItem() {
@@ -682,6 +811,16 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         );
 
         this._applet_context_menu.addMenuItem(this._trayInfoItem);
+    }
+
+    buildTrayManagerMenuItem() {
+        this._trayManagerItem = new PopupMenu.PopupMenuItem("Manage Tray Icons...");
+        this._trayManagerActivateId = this._trayManagerItem.connect(
+            "activate",
+            Lang.bind(this, () => this.openTrayIconManager())
+        );
+
+        this._applet_context_menu.addMenuItem(this._trayManagerItem);
     }
 
     rebuildTrayInfoMenu() {
@@ -840,6 +979,66 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         const cleanLabel = label.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
         if (cleanLabel && cleanLabel.length >= 3) {
             return `label:${cleanLabel}`;
+        }
+
+        return null;
+    }
+
+    getStableIconRule(iconProxy) {
+        const fields = this.getStatusIconMatchFields(iconProxy);
+        const name = fields.name;
+        const icon = fields.icon;
+        const tooltip = fields.tooltip;
+        const label = fields.label;
+
+        if (name && name.length >= 3 && !/[\r\n]/.test(name) && !/^:\d+\.\d+$/.test(name)) {
+            return `name:${name}`;
+        }
+
+        if (icon &&
+            icon.length >= 3 &&
+            icon.indexOf("xapp-tmp-") === -1 &&
+            icon.indexOf("/tmp/") === -1 &&
+            icon.indexOf("/dev/shm/") === -1) {
+            return `icon:${icon}`;
+        }
+
+        if (tooltip && !/[\r\n]/.test(tooltip)) {
+            return `tooltip:${tooltip}`;
+        }
+
+        if (label && !/[\r\n]/.test(label)) {
+            return `label:${label}`;
+        }
+
+        return null;
+    }
+
+    getHiddenIconRuleMatch(iconProxy) {
+        if (this.hiddenIconRules.length === 0) {
+            return null;
+        }
+
+        const fields = this.getStatusIconMatchFields(iconProxy);
+        const lowerFields = {};
+
+        for (let field in fields) {
+            lowerFields[field] = fields[field].toLowerCase();
+        }
+
+        for (let rule of this.hiddenIconRules) {
+            if (rule.field) {
+                if (lowerFields[rule.field].includes(rule.value)) {
+                    return rule;
+                }
+            }
+            else {
+                for (let field in lowerFields) {
+                    if (lowerFields[field].includes(rule.value)) {
+                        return rule;
+                    }
+                }
+            }
         }
 
         return null;
@@ -1020,6 +1219,365 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         return lines.join("\n");
     }
 
+    getTrayIconManagerEntries() {
+        const entries = [];
+        const activeOrderRules = Object.create(null);
+
+        for (let key in this.statusIcons) {
+            const icon = this.statusIcons[key];
+            const fields = this.getStatusIconMatchFields(icon.proxy);
+            const orderRule = this.getStableIconRule(icon.proxy);
+            const hideRule = this.getRecommendedRule(icon.proxy);
+            const normalizedOrderRule = this.normalizeIconOrderRuleLine(orderRule);
+            const hiddenByAnyRule = this.isStatusIconHidden(icon.proxy);
+            const exactRulePresent = Boolean(hideRule) && this.isHiddenIconRuleAdded(hideRule);
+            const orderMatch = this.getIconOrderMatch(icon);
+            let managedPriority = null;
+            let manualPriority = null;
+
+            if (orderMatch) {
+                if (orderMatch.source === "managed" && normalizedOrderRule === orderMatch.rule) {
+                    managedPriority = orderMatch.sourcePriority;
+                } else if (orderMatch.source === "manual") {
+                    manualPriority = orderMatch.sourcePriority;
+                }
+            }
+
+            if (normalizedOrderRule) {
+                activeOrderRules[normalizedOrderRule] = true;
+            }
+
+            entries.push({
+                icon,
+                key,
+                title: this.generateIconTitle(fields),
+                iconName: fields.icon,
+                orderRule,
+                hideRule,
+                applicationVisible: Boolean(icon.applicationVisible),
+                hiddenByAnyRule,
+                exactRulePresent,
+                hiddenByOtherRule: hiddenByAnyRule && !exactRulePresent,
+                effectiveVisible: Boolean(icon.applicationVisible) && !hiddenByAnyRule,
+                managedPriority,
+                manualPriority,
+                unavailable: false
+            });
+        }
+
+        const managedEntries = entries
+            .filter(entry => entry.managedPriority !== null)
+            .sort((a, b) => a.managedPriority - b.managedPriority || this._sortFunc(a.icon, b.icon));
+
+        const otherEntries = entries
+            .filter(entry => entry.managedPriority === null)
+            .sort((a, b) => {
+                if (a.manualPriority !== null && b.manualPriority === null) {
+                    return -1;
+                }
+
+                if (b.manualPriority !== null && a.manualPriority === null) {
+                    return 1;
+                }
+
+                if (a.manualPriority !== null && b.manualPriority !== null && a.manualPriority !== b.manualPriority) {
+                    return a.manualPriority - b.manualPriority;
+                }
+
+                return this._sortFunc(a.icon, b.icon);
+            });
+
+        const unavailableEntries = [];
+
+        for (let rule of this.managedIconOrderRules || []) {
+            const normalized = `${rule.field}:${rule.value}`;
+
+            if (activeOrderRules[normalized]) {
+                continue;
+            }
+
+            unavailableEntries.push({
+                title: rule.rule,
+                iconName: "",
+                orderRule: rule.rule,
+                hideRule: null,
+                applicationVisible: false,
+                hiddenByAnyRule: false,
+                exactRulePresent: false,
+                hiddenByOtherRule: false,
+                effectiveVisible: false,
+                managedPriority: rule.priority,
+                manualPriority: null,
+                unavailable: true
+            });
+        }
+
+        return {
+            managedEntries,
+            otherEntries,
+            unavailableEntries
+        };
+    }
+
+    openTrayIconManager() {
+        if (this._trayIconManagerDialog) {
+            this.rebuildTrayIconManagerDialog();
+            this._trayIconManagerDialog.open(global.get_current_time());
+            return;
+        }
+
+        const dialog = new ModalDialog.ModalDialog({
+            styleClass: "fayoo-xapp-status-manager-dialog",
+            destroyOnClose: false
+        });
+        this._trayIconManagerDialog = dialog;
+
+        const title = new St.Label({
+            style_class: "fayoo-xapp-status-manager-title",
+            text: "Tray Icon Manager"
+        });
+        dialog.contentLayout.add_actor(title);
+
+        const description = new St.Label({
+            style_class: "fayoo-xapp-status-manager-description",
+            text: "Hide or show active tray icons. Ordering is displayed here and will be editable in a later version."
+        });
+        description.clutter_text.line_wrap = true;
+        dialog.contentLayout.add_actor(description);
+
+        const scrollView = new St.ScrollView({
+            style_class: "fayoo-xapp-status-manager-scrollview",
+            x_fill: true,
+            y_fill: true
+        });
+        this._trayIconManagerContent = new St.BoxLayout({
+            vertical: true,
+            style_class: "fayoo-xapp-status-manager-content"
+        });
+        scrollView.add_actor(this._trayIconManagerContent);
+        dialog.contentLayout.add_actor(scrollView);
+
+        dialog.setButtons([
+            {
+                label: "Close",
+                action: () => dialog.close(global.get_current_time()),
+                key: Clutter.KEY_Escape
+            }
+        ]);
+
+        this._trayIconManagerClosedId = dialog.connect("closed", Lang.bind(this, () => {
+            this.cancelTrayIconManagerRefresh();
+        }));
+        this._trayIconManagerDestroyId = dialog.connect("destroy", Lang.bind(this, () => {
+            this.cancelTrayIconManagerRefresh();
+            this.destroyTrayIconManagerTooltips();
+            this._trayIconManagerDialog = null;
+            this._trayIconManagerContent = null;
+            this._trayIconManagerClosedId = 0;
+            this._trayIconManagerDestroyId = 0;
+        }));
+
+        this.rebuildTrayIconManagerDialog();
+        dialog.open(global.get_current_time());
+    }
+
+    destroyTrayIconManagerTooltips() {
+        for (let tooltip of this._trayIconManagerTooltips || []) {
+            tooltip.destroy();
+        }
+
+        this._trayIconManagerTooltips = [];
+    }
+
+    rebuildTrayIconManagerDialog() {
+        if (!this._trayIconManagerContent) {
+            return;
+        }
+
+        this.destroyTrayIconManagerTooltips();
+        this._trayIconManagerContent.destroy_all_children();
+
+        const groups = this.getTrayIconManagerEntries();
+        this.addTrayIconManagerSection("Managed order", groups.managedEntries, "No managed entries yet.");
+        this.addTrayIconManagerSection("Other active icons", groups.otherEntries, "No active tray icons.");
+        this.addTrayIconManagerSection("Unavailable managed entries", groups.unavailableEntries, "All managed entries are currently active.");
+    }
+
+    addTrayIconManagerSection(title, entries, emptyText) {
+        const section = new St.BoxLayout({
+            vertical: true,
+            style_class: "fayoo-xapp-status-manager-section"
+        });
+        const header = new St.Label({
+            style_class: "fayoo-xapp-status-manager-section-title",
+            text: title
+        });
+        section.add_actor(header);
+
+        if (entries.length === 0) {
+            section.add_actor(new St.Label({
+                style_class: "fayoo-xapp-status-manager-empty",
+                text: emptyText
+            }));
+        } else {
+            for (let entry of entries) {
+                section.add_actor(this.createTrayIconManagerRow(entry));
+            }
+        }
+
+        this._trayIconManagerContent.add_actor(section);
+    }
+
+    createTrayIconManagerRow(entry) {
+        const row = new St.BoxLayout({
+            vertical: false,
+            style_class: entry.unavailable
+                ? "fayoo-xapp-status-manager-row fayoo-xapp-status-manager-row-unavailable"
+                : "fayoo-xapp-status-manager-row"
+        });
+
+        row.add_actor(this.createTrayIconManagerEyeButton(entry));
+
+        const iconName = entry.iconName && entry.iconName.indexOf("/") === -1 ? entry.iconName : "image-missing";
+        row.add_actor(new St.Icon({
+            icon_name: iconName,
+            icon_type: St.IconType.FULLCOLOR,
+            icon_size: 22,
+            style_class: "fayoo-xapp-status-manager-row-icon"
+        }));
+
+        const textBox = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style_class: "fayoo-xapp-status-manager-row-text"
+        });
+
+        const title = new St.Label({
+            style_class: "fayoo-xapp-status-manager-row-title",
+            text: entry.title
+        });
+        title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        textBox.add_actor(title);
+
+        const detailParts = [];
+        if (entry.unavailable) {
+            detailParts.push("Not currently active");
+        } else {
+            detailParts.push(entry.effectiveVisible ? "Visible" : "Hidden");
+            if (!entry.applicationVisible) {
+                detailParts.push("App disabled visibility");
+            }
+            if (entry.hiddenByOtherRule) {
+                detailParts.push("Hidden by another rule");
+            }
+        }
+
+        if (entry.orderRule) {
+            detailParts.push(`Order rule: ${entry.orderRule}`);
+        } else {
+            detailParts.push("Order rule: No stable order identifier");
+        }
+
+        if (!entry.unavailable) {
+            if (entry.hideRule) {
+                detailParts.push(`Hide rule: ${entry.hideRule}`);
+            } else {
+                detailParts.push("Hide rule: No safe hide rule");
+            }
+        }
+
+        const detail = new St.Label({
+            style_class: "fayoo-xapp-status-manager-row-detail",
+            text: detailParts.join(" - ")
+        });
+        detail.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        textBox.add_actor(detail);
+        row.add_actor(textBox);
+
+        return row;
+    }
+
+    createTrayIconManagerEyeButton(entry) {
+        let label = entry.effectiveVisible ? "Hide" : "Show";
+        let tooltipText = entry.effectiveVisible ? "Hide this tray icon" : "Show this tray icon";
+        let disabled = false;
+        let action = null;
+
+        if (entry.unavailable) {
+            label = "-";
+            tooltipText = "Not currently active";
+            disabled = true;
+        } else if (!entry.hideRule) {
+            label = "-";
+            tooltipText = "No safe hide rule";
+            disabled = true;
+        } else if (entry.exactRulePresent) {
+            label = "Show";
+            tooltipText = "Remove exact hide rule";
+            action = () => this.removeHiddenIconRule(entry.hideRule);
+        } else if (entry.hiddenByOtherRule) {
+            label = "-";
+            tooltipText = "Hidden by another rule";
+            disabled = true;
+        } else {
+            label = "Hide";
+            tooltipText = "Add exact hide rule";
+            action = () => this.addHiddenIconRule(entry.hideRule);
+        }
+
+        const button = new St.Button({
+            label,
+            reactive: true,
+            can_focus: !disabled,
+            track_hover: true,
+            style_class: disabled
+                ? "fayoo-xapp-status-manager-eye-button fayoo-xapp-status-manager-eye-button-disabled"
+                : "fayoo-xapp-status-manager-eye-button"
+        });
+
+        if (action) {
+            button.connect("clicked", Lang.bind(this, () => {
+                if (action()) {
+                    this.rebuildTrayIconManagerDialog();
+                }
+            }));
+        }
+
+        const tooltip = new Tooltips.Tooltip(button, tooltipText);
+        this._trayIconManagerTooltips.push(tooltip);
+
+        return button;
+    }
+
+    scheduleTrayIconManagerRefresh() {
+        if (!this._trayIconManagerDialog || !this._trayIconManagerContent) {
+            return;
+        }
+
+        if (this._trayIconManagerDialog.state !== ModalDialog.State.OPENED &&
+            this._trayIconManagerDialog.state !== ModalDialog.State.OPENING) {
+            return;
+        }
+
+        if (this._trayIconManagerRefreshId > 0) {
+            return;
+        }
+
+        this._trayIconManagerRefreshId = Mainloop.idle_add(() => {
+            this._trayIconManagerRefreshId = 0;
+            this.rebuildTrayIconManagerDialog();
+
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    cancelTrayIconManagerRefresh() {
+        if (this._trayIconManagerRefreshId > 0) {
+            Mainloop.source_remove(this._trayIconManagerRefreshId);
+            this._trayIconManagerRefreshId = 0;
+        }
+    }
+
     setContainerOrientationClass(orientation) {
         this.manager_container.remove_style_class_name(HORIZONTAL_STYLE_CLASS);
         this.manager_container.remove_style_class_name(VERTICAL_STYLE_CLASS);
@@ -1104,6 +1662,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         this.statusIcons[key] = statusIcon;
 
         this.sortIcons();
+        this.scheduleTrayIconManagerRefresh();
     }
 
     removeStatusIcon(icon_proxy) {
@@ -1118,6 +1677,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         delete this.statusIcons[key];
 
         this.sortIcons();
+        this.scheduleTrayIconManagerRefresh();
     }
 
     ignoreStatusIcon(icon_proxy) {
@@ -1246,6 +1806,23 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     }
 
     on_applet_removed_from_panel() {
+        if (this._trayIconManagerDialog) {
+            this.cancelTrayIconManagerRefresh();
+            this.destroyTrayIconManagerTooltips();
+            this._trayIconManagerDialog.destroy();
+            this._trayIconManagerDialog = null;
+            this._trayIconManagerContent = null;
+        }
+
+        if (this._trayManagerItem) {
+            if (this._trayManagerActivateId) {
+                this._trayManagerItem.disconnect(this._trayManagerActivateId);
+                this._trayManagerActivateId = 0;
+            }
+            this._trayManagerItem.destroy();
+            this._trayManagerItem = null;
+        }
+
         if (this._trayInfoItem && this._trayInfoConnectId) {
             this._trayInfoItem.menu.disconnect(this._trayInfoConnectId);
             this._trayInfoConnectId = 0;
