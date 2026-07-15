@@ -2,17 +2,45 @@
 
 ## Unreleased
 
+- None.
+
+## [0.3.0] - 2026-07-16
+
 ### Added
 
 - Added custom tray icon ordering through the `icon-order` setting.
 - Added exact, case-insensitive matching for `name:`, `icon:`, `tooltip:`, and `label:` rules.
 - Added support for comments, empty lines, duplicate-rule filtering, and LF/CRLF/CR input.
 - Added immediate reordering when the setting or relevant icon properties change.
+- Added Tray Icon Manager from the applet context menu.
+- Added managed tray icon ordering backed by `managed-icon-order`.
+- Added drag-and-drop support for adding active icons to managed order, reordering managed icons, and removing managed icons.
+- Added Hide and Show controls in the Tray Icon Manager using exact safe hide rules.
+- Added unavailable managed rows so saved managed order survives when applications are closed.
+- Added custom tray icon override backend through `custom-icon-overrides`.
+- Added support for theme icon name overrides and local PNG/SVG file overrides.
+- Added fallback to the original application icon when a saved custom icon override is invalid.
+- Added custom icon diagnostics to Tray Icon Info.
+- Added `Change icon...` and `Reset icon` controls to the Tray Icon Manager.
+- Added an in-dialog custom icon editor for theme icon names and absolute PNG/SVG paths.
+- Added inactive custom icon override management.
 
 ### Changed
 
 - Matched icons follow custom-rule priority while unmatched icons retain the existing default order.
 - Multiline fields are excluded from custom-order matching.
+- Managed ordering takes priority over advanced `icon-order` rules while preserving advanced rules outside the managed list.
+- Tray Icon Manager refreshes are deferred during drag operations and skipped while editing custom icon values.
+- Custom icon overrides use the same stable identity logic as ordering and safe recommended rules.
+
+### Limitations
+
+- Custom icon overrides are single default overrides per identity in this release.
+- State-aware custom icon overrides for multi-state applications are not included yet.
+
+### Compatibility
+
+- Verified on Linux Mint 22.3 with Cinnamon 6.6.7.
 
 ## [0.2.0] - 2026-07-12
 
