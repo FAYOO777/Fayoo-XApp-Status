@@ -10,7 +10,7 @@
 }
 
 .fayoo-xapp-status-manager-dialog {
-    min-width: 560px;
+    min-width: 780px;
 }
 
 .fayoo-xapp-status-manager-title {
@@ -30,6 +30,11 @@
 
 .fayoo-xapp-status-manager-section {
     padding-bottom: 14px;
+}
+
+.fayoo-xapp-status-manager-toolbar {
+    spacing: 10px;
+    padding-bottom: 12px;
 }
 
 .fayoo-xapp-status-manager-section-title {
@@ -73,6 +78,15 @@
     color: #777777;
 }
 
+.fayoo-xapp-status-manager-button {
+    min-width: 96px;
+    padding: 4px 8px;
+}
+
+.fayoo-xapp-status-manager-button-disabled {
+    color: #777777;
+}
+
 .fayoo-xapp-status-manager-drag-handle {
     min-width: 28px;
     padding: 4px 6px;
@@ -104,4 +118,38 @@
     spacing: 8px;
     padding: 6px 8px;
     border-radius: 4px;
+}
+
+.fayoo-xapp-status-manager-editor {
+    spacing: 8px;
+}
+
+.fayoo-xapp-status-manager-editor-row,
+.fayoo-xapp-status-manager-type-row {
+    spacing: 8px;
+}
+
+.fayoo-xapp-status-manager-editor-label {
+    min-width: 96px;
+}
+
+.fayoo-xapp-status-manager-editor-entry {
+    min-width: 520px;
+}
+
+.fayoo-xapp-status-manager-type-button {
+    padding: 4px 8px;
+}
+
+.fayoo-xapp-status-manager-type-button-selected {
+    font-weight: bold;
+}
+
+.fayoo-xapp-status-manager-editor-status {
+    padding-top: 4px;
+    max-width: 680px;
+}
+
+.fayoo-xapp-status-manager-editor-status-error {
+    color: #ff9999;
 }
