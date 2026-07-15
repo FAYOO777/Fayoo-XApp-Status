@@ -118,6 +118,16 @@ class XAppStatusIcon {
         this.proxy = proxy;
 
         this.iconName = null;
+        this.originalIconName = null;
+        this.customIconIdentity = null;
+        this.customIconOverride = null;
+        this.customIconValid = null;
+        this.customIconError = null;
+        this.displayIconSource = "original";
+        this._iconRenderGeneration = 0;
+        this._iconRenderValue = null;
+        this._iconRenderSource = null;
+        this._destroyed = false;
         this.applicationVisible = true;
 
         this.actor = new St.BoxLayout({
@@ -160,23 +170,27 @@ class XAppStatusIcon {
     on_properties_changed(proxy, changed_props, invalidated_props) {
         let prop_names = changed_props.deep_unpack();
         let shouldResort = false;
+        let shouldRefreshIcon = false;
 
         if ('IconName' in prop_names) {
-            this.setIconName(proxy.icon_name);
+            shouldRefreshIcon = true;
             shouldResort = true;
         }
         if ('TooltipText' in prop_names) {
             this.setTooltipText(proxy.tooltip_text);
+            shouldRefreshIcon = true;
             shouldResort = true;
         }
         if ('Label' in prop_names) {
             this.setLabel(proxy.label);
+            shouldRefreshIcon = true;
             shouldResort = true;
         }
         if ('Visible' in prop_names) {
             this.setVisible(proxy.visible);
         }
         if ('Name' in prop_names) {
+            shouldRefreshIcon = true;
             shouldResort = true;
         }
 
@@ -185,6 +199,10 @@ class XAppStatusIcon {
             'TooltipText' in prop_names ||
             'Label' in prop_names) {
             this.updateEffectiveVisibility();
+        }
+
+        if (shouldRefreshIcon) {
+            this.setIconName(proxy.icon_name);
         }
 
         if (shouldResort) {
@@ -233,55 +251,122 @@ class XAppStatusIcon {
         }
     }
 
-    setIconName(iconName) {
-        if (iconName) {
-            let type, icon;
+    setIconName(originalIconName) {
+        this.originalIconName = originalIconName;
 
-            if (iconName.match(/symbolic/)) {
-                type = St.IconType.SYMBOLIC;
-            }
-            else {
-                type = St.IconType.FULLCOLOR;
-            }
+        const request = this.applet.getIconRenderRequest(this.proxy, originalIconName);
+        this.applyIconRenderRequest(request);
+    }
 
-            this.iconName = iconName;
-            const baseIconSize = this.applet.getPanelIconSize(type);
-            this.iconSize = this.applet.getScaledIconSize(baseIconSize);
-            this.proxy.icon_size = this.iconSize;
+    applyIconRenderRequest(request) {
+        const generation = ++this._iconRenderGeneration;
 
-            // Assume symbolic icons would always be square/suitable for an StIcon.
-            if (iconName.includes("/") && type != St.IconType.SYMBOLIC) {
-                this.icon_loader_handle = St.TextureCache.get_default().load_image_from_file_async(
-                    iconName,
-                    /* If top/bottom panel, allow the image to expand horizontally,
-                     * otherwise, restrict it to a square (but keep aspect ratio.) */
-                    this.actor.vertical ? this.iconSize : -1,
-                    this.iconSize,
-                    (...args)=>this._onImageLoaded(...args)
-                );
+        this.customIconIdentity = request.identity || null;
+        this.customIconOverride = request.override || null;
+        this.customIconValid = request.override ? Boolean(request.override.valid) : null;
+        this.customIconError = request.override ? (request.override.error || null) : null;
+        this.displayIconSource = request.source || "original";
 
-                return;
-            }
-            else {
-                icon = new St.Icon( { "icon-type": type, "icon-size": this.iconSize, "icon-name": iconName });
-                this.icon_holder.show();
-                this.icon_holder.child = icon;
-            }
-        }
-        else {
+        this.renderIconRequest(request, generation);
+    }
+
+    getIconType(value) {
+        return String(value || "").toLowerCase().includes("symbolic")
+            ? St.IconType.SYMBOLIC
+            : St.IconType.FULLCOLOR;
+    }
+
+    renderIconRequest(request, generation) {
+        const iconName = request.value;
+
+        this._iconRenderValue = iconName;
+        this._iconRenderSource = request.source;
+
+        if (!iconName) {
             this.iconName = null;
             this.icon_holder.hide();
+            return;
+        }
+
+        const type = this.getIconType(iconName);
+        this.iconName = iconName;
+        const baseIconSize = this.applet.getPanelIconSize(type);
+        this.iconSize = this.applet.getScaledIconSize(baseIconSize);
+        this.proxy.icon_size = this.iconSize;
+
+        if (request.type === "file") {
+            this.renderFileIconRequest(request, generation);
+            return;
+        }
+
+        const icon = new St.Icon({
+            "icon-type": type,
+            "icon-size": this.iconSize,
+            "icon-name": iconName
+        });
+        this.icon_holder.show();
+        this.icon_holder.child = icon;
+    }
+
+    renderFileIconRequest(request, generation) {
+        try {
+            this.icon_loader_handle = St.TextureCache.get_default().load_image_from_file_async(
+                request.value,
+                /* If top/bottom panel, allow the image to expand horizontally,
+                 * otherwise, restrict it to a square (but keep aspect ratio.) */
+                this.actor.vertical ? this.iconSize : -1,
+                this.iconSize,
+                (cache, handle, actor, data) => this._onImageLoaded(cache, handle, actor, data, generation, request)
+            );
+        } catch (e) {
+            this.handleIconLoadFailure(request, generation, "Unable to load image file");
         }
     }
 
-    _onImageLoaded(cache, handle, actor, data=null) {
-        if (handle !== this.icon_loader_handle) {
-            global.logError(`fayoo-xapp-status@fayoo: Icon or image seems out of sync (${this.name}`);
+    _onImageLoaded(cache, handle, actor, data=null, generation=null, request=null) {
+        if (this._destroyed || this.actor.is_finalized()) {
+            return;
+        }
+
+        if (generation !== this._iconRenderGeneration || handle !== this.icon_loader_handle) {
+            return;
+        }
+
+        if (!actor || actor.is_finalized()) {
+            this.handleIconLoadFailure(request, generation, "Unable to load image file");
             return;
         }
 
         this.icon_holder.child = actor;
         this.icon_holder.show();
+    }
+
+    handleIconLoadFailure(request, generation, error) {
+        if (generation !== this._iconRenderGeneration || !request) {
+            return;
+        }
+
+        if (request.override && request.source !== "fallback-original") {
+            this.customIconValid = false;
+            this.customIconError = error;
+            this.displayIconSource = "fallback-original";
+            this.applet.scheduleTrayIconManagerRefresh();
+
+            const fallbackRequest = {
+                source: "fallback-original",
+                type: this.applet.getIconRenderType(request.fallbackValue),
+                value: request.fallbackValue,
+                fallbackValue: request.fallbackValue,
+                identity: request.identity,
+                override: request.override
+            };
+
+            this.renderIconRequest(fallbackRequest, generation);
+            return;
+        }
+
+        this.iconName = null;
+        this.icon_holder.hide();
     }
 
     setTooltipText(tooltipText) {
@@ -421,6 +506,8 @@ class XAppStatusIcon {
     }
 
     destroy() {
+        this._destroyed = true;
+        this._iconRenderGeneration++;
         this.proxy.disconnect(this._proxy_prop_change_id);
         this._proxy_prop_change_id = 0;
         this._tooltip.destroy();
@@ -457,6 +544,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         this.managedIconOrderRules = [];
         this.iconOrderRules = [];
         this.effectiveIconOrderRules = [];
+        this.customIconOverrideMap = Object.create(null);
+        this.customIconOverrideRecords = [];
         this._trayIconManagerDialog = null;
         this._trayIconManagerContent = null;
         this._trayIconManagerTooltips = [];
@@ -509,10 +598,16 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             "managedIconOrder",
             () => this.onManagedIconOrderChanged()
         );
+        this.settings.bind(
+            "custom-icon-overrides",
+            "customIconOverrides",
+            () => this.onCustomIconOverridesChanged()
+        );
 
         this.rebuildHiddenIconRules();
         this.rebuildManagedIconOrderRules();
         this.rebuildIconOrderRules();
+        this.rebuildCustomIconOverrides();
 
         this.buildTrayInfoMenuItem();
         this.buildTrayManagerMenuItem();
@@ -827,6 +922,390 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         return true;
     }
 
+    isPlainSettingsObject(value) {
+        return Boolean(value && typeof value === "object" && !Array.isArray(value));
+    }
+
+    normalizeCustomIconRule(rule) {
+        return this.normalizeIconOrderRuleLine(rule);
+    }
+
+    getCustomIconIdentityRule(iconProxy) {
+        const orderRule = this.getStableIconRule(iconProxy);
+        const normalizedOrderRule = this.normalizeCustomIconRule(orderRule);
+
+        if (normalizedOrderRule) {
+            return normalizedOrderRule;
+        }
+
+        const hideRule = this.getRecommendedRule(iconProxy);
+        const normalizedHideRule = this.normalizeCustomIconRule(hideRule);
+
+        return normalizedHideRule || null;
+    }
+
+    normalizeCustomIconFilePath(value) {
+        const rawPath = String(value || "").trim();
+
+        if (!rawPath) {
+            return { path: "", error: "Empty file path" };
+        }
+
+        if (/[\r\n]/.test(rawPath)) {
+            return { path: rawPath, error: "File path must be a single line" };
+        }
+
+        let path = rawPath;
+
+        if (path === "~") {
+            return { path, error: "File path must be absolute" };
+        }
+
+        if (path.indexOf("~/") === 0) {
+            path = GLib.build_filenamev([GLib.get_home_dir(), path.slice(2)]);
+        }
+
+        if (!GLib.path_is_absolute(path)) {
+            return { path, error: "File path must be absolute" };
+        }
+
+        return { path, error: null };
+    }
+
+    validateCustomIconFile(value) {
+        const normalized = this.normalizeCustomIconFilePath(value);
+
+        if (normalized.error) {
+            return {
+                type: "file",
+                value: normalized.path,
+                valid: false,
+                error: normalized.error
+            };
+        }
+
+        const path = normalized.path;
+        const file = Gio.File.new_for_path(path);
+
+        if (!file.query_exists(null)) {
+            return {
+                type: "file",
+                value: path,
+                valid: false,
+                error: "File does not exist"
+            };
+        }
+
+        let fileType;
+        try {
+            fileType = file.query_file_type(Gio.FileQueryInfoFlags.NONE, null);
+        } catch (e) {
+            return {
+                type: "file",
+                value: path,
+                valid: false,
+                error: "Path is not a regular file"
+            };
+        }
+
+        if (fileType !== Gio.FileType.REGULAR) {
+            return {
+                type: "file",
+                value: path,
+                valid: false,
+                error: "Path is not a regular file"
+            };
+        }
+
+        const lowerPath = path.toLowerCase();
+
+        if (!lowerPath.endsWith(".png") && !lowerPath.endsWith(".svg")) {
+            return {
+                type: "file",
+                value: path,
+                valid: false,
+                error: "Unsupported file type"
+            };
+        }
+
+        return {
+            type: "file",
+            value: path,
+            valid: true,
+            error: null
+        };
+    }
+
+    hasThemeIcon(iconName) {
+        const theme = Gtk.IconTheme.get_default();
+
+        if (theme && theme.has_icon) {
+            return theme.has_icon(iconName);
+        }
+
+        if (theme && theme.lookup_icon) {
+            return Boolean(theme.lookup_icon(iconName, 16, 0));
+        }
+
+        return false;
+    }
+
+    validateCustomIconOverride(type, value) {
+        const normalizedType = String(type || "").trim().toLowerCase();
+        const stringValue = String(value || "").trim();
+
+        if (normalizedType !== "theme" && normalizedType !== "file") {
+            return {
+                type: normalizedType,
+                value: stringValue,
+                valid: false,
+                error: "Unsupported override type"
+            };
+        }
+
+        if (!stringValue) {
+            return {
+                type: normalizedType,
+                value: stringValue,
+                valid: false,
+                error: normalizedType === "file" ? "Empty file path" : "Empty theme icon name"
+            };
+        }
+
+        if (/[\r\n]/.test(stringValue)) {
+            return {
+                type: normalizedType,
+                value: stringValue,
+                valid: false,
+                error: normalizedType === "file" ? "File path must be a single line" : "Theme icon name must be a single line"
+            };
+        }
+
+        if (normalizedType === "file") {
+            return this.validateCustomIconFile(stringValue);
+        }
+
+        if (!this.hasThemeIcon(stringValue)) {
+            return {
+                type: "theme",
+                value: stringValue,
+                valid: false,
+                error: "Theme icon not found"
+            };
+        }
+
+        return {
+            type: "theme",
+            value: stringValue,
+            valid: true,
+            error: null
+        };
+    }
+
+    refreshCustomIconOverrideRecord(record) {
+        if (!record || !record.normalizedRule) {
+            return record;
+        }
+
+        const validation = this.validateCustomIconOverride(record.rawType, record.rawValue);
+        record.type = validation.type;
+        record.value = validation.value;
+        record.valid = validation.valid;
+        record.error = validation.error;
+
+        return record;
+    }
+
+    rebuildCustomIconOverrides() {
+        const overrides = this.isPlainSettingsObject(this.customIconOverrides)
+            ? this.customIconOverrides
+            : Object.create(null);
+        const records = [];
+        const map = Object.create(null);
+
+        for (let key in overrides) {
+            if (!Object.prototype.hasOwnProperty.call(overrides, key)) {
+                continue;
+            }
+
+            const normalizedRule = this.normalizeCustomIconRule(key);
+            const rawOverride = overrides[key];
+            let record = {
+                normalizedRule,
+                type: "",
+                value: "",
+                rawType: "",
+                rawValue: "",
+                valid: false,
+                error: null
+            };
+
+            if (!normalizedRule) {
+                record.error = "Invalid identity rule";
+                records.push(record);
+                continue;
+            }
+
+            if (!this.isPlainSettingsObject(rawOverride)) {
+                record.error = "Override value must be an object";
+                records.push(record);
+                map[normalizedRule] = record;
+                continue;
+            }
+
+            record.rawType = rawOverride.type;
+            record.rawValue = rawOverride.value;
+            this.refreshCustomIconOverrideRecord(record);
+
+            records.push(record);
+            map[normalizedRule] = record;
+        }
+
+        this.customIconOverrideRecords = records;
+        this.customIconOverrideMap = map;
+    }
+
+    onCustomIconOverridesChanged() {
+        this.rebuildCustomIconOverrides();
+        this.refreshCustomIconOverrides();
+    }
+
+    refreshCustomIconOverrides() {
+        if (this.statusIcons) {
+            for (let key in this.statusIcons) {
+                this.statusIcons[key].refresh();
+            }
+        }
+
+        this.scheduleTrayIconManagerRefresh();
+    }
+
+    getCustomIconOverride(iconProxy) {
+        const identity = this.getCustomIconIdentityRule(iconProxy);
+
+        if (!identity) {
+            return null;
+        }
+
+        const override = this.customIconOverrideMap[identity] || null;
+
+        if (override) {
+            this.refreshCustomIconOverrideRecord(override);
+        }
+
+        return override;
+    }
+
+    getIconRenderType(iconName) {
+        const value = String(iconName || "");
+
+        if (value.includes("/") && !value.toLowerCase().includes("symbolic")) {
+            return "file";
+        }
+
+        return "theme";
+    }
+
+    getIconRenderRequest(iconProxy, originalIconName) {
+        const identity = this.getCustomIconIdentityRule(iconProxy);
+        const override = identity ? this.getCustomIconOverride(iconProxy) : null;
+        const originalValue = originalIconName || "";
+
+        if (override && override.valid) {
+            return {
+                source: override.type === "file" ? "custom-file" : "custom-theme",
+                type: override.type,
+                value: override.value,
+                fallbackValue: originalValue,
+                identity,
+                override
+            };
+        }
+
+        return {
+            source: override ? "fallback-original" : "original",
+            type: this.getIconRenderType(originalValue),
+            value: originalValue,
+            fallbackValue: originalValue,
+            identity,
+            override
+        };
+    }
+
+    getCustomIconOverridesRawObject() {
+        const raw = this.isPlainSettingsObject(this.customIconOverrides)
+            ? this.customIconOverrides
+            : Object.create(null);
+        const copy = Object.create(null);
+
+        for (let key in raw) {
+            if (Object.prototype.hasOwnProperty.call(raw, key)) {
+                copy[key] = raw[key];
+            }
+        }
+
+        return copy;
+    }
+
+    setCustomIconOverride(rule, type, value) {
+        const normalizedRule = this.normalizeCustomIconRule(rule);
+
+        if (!normalizedRule) {
+            return false;
+        }
+
+        const validation = this.validateCustomIconOverride(type, value);
+
+        if (!validation.valid) {
+            return false;
+        }
+
+        const nextOverrides = this.getCustomIconOverridesRawObject();
+        nextOverrides[normalizedRule] = {
+            type: validation.type,
+            value: validation.value
+        };
+
+        this.customIconOverrides = nextOverrides;
+        this.onCustomIconOverridesChanged();
+
+        return true;
+    }
+
+    removeCustomIconOverride(rule) {
+        const normalizedRule = this.normalizeCustomIconRule(rule);
+
+        if (!normalizedRule) {
+            return false;
+        }
+
+        const raw = this.getCustomIconOverridesRawObject();
+        const nextOverrides = Object.create(null);
+        let removed = false;
+
+        for (let key in raw) {
+            if (!Object.prototype.hasOwnProperty.call(raw, key)) {
+                continue;
+            }
+
+            if (this.normalizeCustomIconRule(key) === normalizedRule) {
+                removed = true;
+                continue;
+            }
+
+            nextOverrides[key] = raw[key];
+        }
+
+        if (!removed) {
+            return false;
+        }
+
+        this.customIconOverrides = nextOverrides;
+        this.onCustomIconOverridesChanged();
+
+        return true;
+    }
+
     rebuildEffectiveIconOrderRules() {
         const rules = [];
         const managedSeen = Object.create(null);
@@ -961,6 +1440,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
             const hidden = this.isStatusIconHidden(icon.proxy);
             const effective = Boolean(icon.applicationVisible) && !hidden;
+            const customIconDiagnostics = this.getCustomIconDiagnostics(icon);
 
             const fieldLines = [
                 { label: "name", value: fields.name },
@@ -969,7 +1449,12 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 { label: "label", value: fields.label },
                 { label: "application-visible", value: icon.applicationVisible ? "true" : "false" },
                 { label: "hidden-by-rule", value: hidden ? "true" : "false" },
-                { label: "effective-visible", value: effective ? "true" : "false" }
+                { label: "effective-visible", value: effective ? "true" : "false" },
+                { label: "custom-icon-identity", value: customIconDiagnostics.identity },
+                { label: "custom-icon-override", value: customIconDiagnostics.override },
+                { label: "custom-icon-valid", value: customIconDiagnostics.valid },
+                { label: "custom-icon-error", value: customIconDiagnostics.error },
+                { label: "display-icon-source", value: customIconDiagnostics.source }
             ];
 
             const recommendedRule = this.getRecommendedRule(icon.proxy);
@@ -1286,11 +1771,33 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         return true;
     }
 
+    getCustomIconDiagnostics(icon) {
+        const override = icon.customIconOverride;
+        let overrideText = "none";
+        let validText = "unavailable";
+
+        if (override) {
+            const type = override.type || String(override.rawType || "").trim() || "invalid";
+            const value = override.value || String(override.rawValue || "").trim();
+            overrideText = value ? `${type}:${value}` : type;
+            validText = icon.customIconValid ? "true" : "false";
+        }
+
+        return {
+            identity: icon.customIconIdentity || "unavailable",
+            override: overrideText,
+            valid: validText,
+            error: icon.customIconError || "none",
+            source: icon.displayIconSource || "original"
+        };
+    }
+
     formatIconDiagnostics(icon) {
         const fields = this.getStatusIconMatchFields(icon.proxy);
         const hidden = this.isStatusIconHidden(icon.proxy);
         const effective = Boolean(icon.applicationVisible) && !hidden;
         const recommendedRule = this.getRecommendedRule(icon.proxy);
+        const customIconDiagnostics = this.getCustomIconDiagnostics(icon);
 
         const lines = [];
         lines.push(`name: ${fields.name || "(empty)"}`);
@@ -1301,6 +1808,11 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         lines.push(`hidden-by-rule: ${hidden ? "true" : "false"}`);
         lines.push(`effective-visible: ${effective ? "true" : "false"}`);
         lines.push(`recommended-rule: ${recommendedRule || "unavailable"}`);
+        lines.push(`custom-icon-identity: ${customIconDiagnostics.identity}`);
+        lines.push(`custom-icon-override: ${customIconDiagnostics.override}`);
+        lines.push(`custom-icon-valid: ${customIconDiagnostics.valid}`);
+        lines.push(`custom-icon-error: ${customIconDiagnostics.error}`);
+        lines.push(`display-icon-source: ${customIconDiagnostics.source}`);
 
         return lines.join("\n");
     }

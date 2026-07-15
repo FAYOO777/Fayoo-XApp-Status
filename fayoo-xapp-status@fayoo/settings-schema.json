@@ -33,5 +33,9 @@
     "managed-icon-order": {
         "type": "generic",
         "default": []
+    },
+    "custom-icon-overrides": {
+        "type": "generic",
+        "default": {}
     }
 }
