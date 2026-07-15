@@ -1,4 +1,4 @@
-# Fayoo XApp Status · v0.2.0
+# Fayoo XApp Status · v0.3.0
 
 Personal independent fork of Linux Mint Cinnamon's `xapp-status@cinnamon.org` applet.
 
@@ -19,7 +19,7 @@ This repository does not modify files under `/usr/share` and does not replace `x
 
 ## Current Stage
 
-This project started as a minimal fork and now includes small tray presentation customizations. Tray icon sorting, click handling, scroll handling, visibility handling, and XApp monitor logic remain based on the system applet baseline.
+This project started as a minimal fork and now includes tray presentation customizations, rule-based visibility, diagnostics, managed ordering, and custom tray icon overrides. Tray icon click handling, scroll handling, application visibility handling, and XApp monitor logic remain based on the system applet baseline.
 
 The current baseline has been verified to install in development mode and run on Linux Mint 22.3 `zena` with Cinnamon `6.6.7+zena` and XApp `3.2.2+zena`.
 
@@ -34,7 +34,7 @@ The applet provides a global tray icon scale setting for the XApp tray icons it 
 
 To change the scale, open Cinnamon's Applets settings, select `Fayoo XApp Status Applet`, and open its configuration dialog.
 
-The applet can also hide selected XApp tray icons by rule. Add rules in the `Hidden tray icons` setting, one rule per line.
+The applet can also hide selected XApp tray icons by rule. Add rules in the `Hidden tray icons` setting, one rule per line, or use `Manage Tray Icons...` from the applet context menu.
 
 - Supported prefixes: `name:`, `icon:`, `tooltip:`, `label:`
 - Prefixes and matched text are case-insensitive.
@@ -55,7 +55,7 @@ icon:fayoo-fcitx-pinyin
 tooltip:Clash Party
 ```
 
-The applet can also place selected XApp tray icons first by rule. Add rules in the `Custom icon order` setting, one exact rule per line.
+The applet can also place selected XApp tray icons first by rule. Use `Manage Tray Icons...` for drag-and-drop managed ordering, or add advanced rules in the `Custom icon order` setting, one exact rule per line.
 
 - Supported prefixes: `name:`, `icon:`, `tooltip:`, `label:`
 - Earlier rules have higher priority.
@@ -78,11 +78,34 @@ icon:/opt/betterbird/chrome/icons/default/newmail.svg
 
 Use the actual field value for each icon. For example, Blueman should use `name:blueman`, Betterbird unread-mail indicators should use a stable `icon:` rule, and `name:t` will not match `telegramdesktop`.
 
+The Tray Icon Manager is available from the applet context menu as `Manage Tray Icons...`.
+
+- Shows managed-order icons and other active XApp tray icons in one dialog.
+- Drag active icons into `Managed order` to place them first.
+- Drag managed icons within the managed list to reorder them.
+- Drag managed icons to the remove zone to return them to normal ordering.
+- Provides Hide and Show buttons for exact safe hide rules.
+- Preserves manually written advanced `Custom icon order` rules outside the managed list.
+- Keeps unavailable managed entries visible so their saved order is not lost when an application is closed.
+
+The Tray Icon Manager can also set a custom display icon per stable tray icon identity.
+
+- Click `Change icon...` to choose a theme icon name or an absolute local PNG/SVG file path.
+- Click `Reset icon` to remove the custom icon override and return to the application's original icon.
+- Invalid custom icon values are not saved from the editor.
+- If an existing saved override becomes invalid, the applet falls back to the original application icon.
+- Inactive overrides can be reviewed from `Inactive overrides` when their matching tray icon is not currently active.
+- Custom icon identities prefer stable exact rules such as `name:blueman`, then fall back to the recommended safe rule.
+- Custom icon overrides do not modify the application's original `icon_name`; they only change this applet's rendered icon.
+- Browse dialogs, search, undo, and bulk actions are not included in this release.
+- Custom icon overrides are currently single default overrides per identity. State-aware overrides for multi-state applications are planned separately.
+
 A diagnostic menu is available to inspect all current XApp tray icon details. Right-click the applet and select `Tray Icon Info`.
 
 - Lists every XApp tray icon in real time, including hidden ones.
 - Shows `name`, `icon`, `tooltip`, `label`.
 - Shows application-visible, hidden-by-rule, and effective-visible states.
+- Shows custom icon identity, override, validity, error, and rendered source diagnostics.
 - Supports copying the recommended hide rule per-icon.
 - Supports copying per-icon diagnostic text.
 - Supports copying a full diagnostics report for all icons.

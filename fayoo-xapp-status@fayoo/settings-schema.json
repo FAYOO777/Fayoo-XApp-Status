@@ -29,5 +29,13 @@
         "description": "Custom icon order",
         "height": 140,
         "tooltip": "Enter one exact icon rule per line. Supported prefixes: name:, icon:, tooltip:, label:. Earlier rules appear first. Empty lines and lines beginning with # are ignored."
+    },
+    "managed-icon-order": {
+        "type": "generic",
+        "default": []
+    },
+    "custom-icon-overrides": {
+        "type": "generic",
+        "default": {}
     }
 }

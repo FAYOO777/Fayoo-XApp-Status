@@ -4,5 +4,5 @@
     "description": "A personal fork of Cinnamon's XApp Status Applet for hosting XAppStatusIcon tray icons",
     "max-instances": -1,
     "icon": "cs-applets",
-    "version": "0.2.0"
+    "version": "0.3.0"
 }

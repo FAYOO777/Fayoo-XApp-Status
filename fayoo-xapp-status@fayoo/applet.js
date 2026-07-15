@@ -3,6 +3,7 @@ const Lang = imports.lang;
 const St = imports.gi.St;
 const Gio = imports.gi.Gio;
 const Clutter = imports.gi.Clutter;
+const Pango = imports.gi.Pango;
 const Interfaces = imports.misc.interfaces;
 const Applet = imports.ui.applet;
 const Main = imports.ui.main;
@@ -14,6 +15,8 @@ const XApp = imports.gi.XApp;
 const GLib = imports.gi.GLib;
 const PopupMenu = imports.ui.popupMenu;
 const Tooltips = imports.ui.tooltips;
+const ModalDialog = imports.ui.modalDialog;
+const DND = imports.ui.dnd;
 
 const HORIZONTAL_STYLE = 'padding-left: 2px; padding-right: 2px; padding-top: 0; padding-bottom: 0';
 const VERTICAL_STYLE = 'padding-left: 0; padding-right: 0; padding-top: 2px; padding-bottom: 2px';
@@ -115,6 +118,16 @@ class XAppStatusIcon {
         this.proxy = proxy;
 
         this.iconName = null;
+        this.originalIconName = null;
+        this.customIconIdentity = null;
+        this.customIconOverride = null;
+        this.customIconValid = null;
+        this.customIconError = null;
+        this.displayIconSource = "original";
+        this._iconRenderGeneration = 0;
+        this._iconRenderValue = null;
+        this._iconRenderSource = null;
+        this._destroyed = false;
         this.applicationVisible = true;
 
         this.actor = new St.BoxLayout({
@@ -157,23 +170,27 @@ class XAppStatusIcon {
     on_properties_changed(proxy, changed_props, invalidated_props) {
         let prop_names = changed_props.deep_unpack();
         let shouldResort = false;
+        let shouldRefreshIcon = false;
 
         if ('IconName' in prop_names) {
-            this.setIconName(proxy.icon_name);
+            shouldRefreshIcon = true;
             shouldResort = true;
         }
         if ('TooltipText' in prop_names) {
             this.setTooltipText(proxy.tooltip_text);
+            shouldRefreshIcon = true;
             shouldResort = true;
         }
         if ('Label' in prop_names) {
             this.setLabel(proxy.label);
+            shouldRefreshIcon = true;
             shouldResort = true;
         }
         if ('Visible' in prop_names) {
             this.setVisible(proxy.visible);
         }
         if ('Name' in prop_names) {
+            shouldRefreshIcon = true;
             shouldResort = true;
         }
 
@@ -184,8 +201,16 @@ class XAppStatusIcon {
             this.updateEffectiveVisibility();
         }
 
+        if (shouldRefreshIcon) {
+            this.setIconName(proxy.icon_name);
+        }
+
         if (shouldResort) {
             this.applet.sortIcons();
+        }
+
+        if (shouldResort || 'Visible' in prop_names) {
+            this.applet.scheduleTrayIconManagerRefresh();
         }
 
         if ('PrimaryMenuIsOpen' in prop_names) {
@@ -226,55 +251,122 @@ class XAppStatusIcon {
         }
     }
 
-    setIconName(iconName) {
-        if (iconName) {
-            let type, icon;
+    setIconName(originalIconName) {
+        this.originalIconName = originalIconName;
 
-            if (iconName.match(/symbolic/)) {
-                type = St.IconType.SYMBOLIC;
-            }
-            else {
-                type = St.IconType.FULLCOLOR;
-            }
+        const request = this.applet.getIconRenderRequest(this.proxy, originalIconName);
+        this.applyIconRenderRequest(request);
+    }
 
-            this.iconName = iconName;
-            const baseIconSize = this.applet.getPanelIconSize(type);
-            this.iconSize = this.applet.getScaledIconSize(baseIconSize);
-            this.proxy.icon_size = this.iconSize;
+    applyIconRenderRequest(request) {
+        const generation = ++this._iconRenderGeneration;
 
-            // Assume symbolic icons would always be square/suitable for an StIcon.
-            if (iconName.includes("/") && type != St.IconType.SYMBOLIC) {
-                this.icon_loader_handle = St.TextureCache.get_default().load_image_from_file_async(
-                    iconName,
-                    /* If top/bottom panel, allow the image to expand horizontally,
-                     * otherwise, restrict it to a square (but keep aspect ratio.) */
-                    this.actor.vertical ? this.iconSize : -1,
-                    this.iconSize,
-                    (...args)=>this._onImageLoaded(...args)
-                );
+        this.customIconIdentity = request.identity || null;
+        this.customIconOverride = request.override || null;
+        this.customIconValid = request.override ? Boolean(request.override.valid) : null;
+        this.customIconError = request.override ? (request.override.error || null) : null;
+        this.displayIconSource = request.source || "original";
 
-                return;
-            }
-            else {
-                icon = new St.Icon( { "icon-type": type, "icon-size": this.iconSize, "icon-name": iconName });
-                this.icon_holder.show();
-                this.icon_holder.child = icon;
-            }
-        }
-        else {
+        this.renderIconRequest(request, generation);
+    }
+
+    getIconType(value) {
+        return String(value || "").toLowerCase().includes("symbolic")
+            ? St.IconType.SYMBOLIC
+            : St.IconType.FULLCOLOR;
+    }
+
+    renderIconRequest(request, generation) {
+        const iconName = request.value;
+
+        this._iconRenderValue = iconName;
+        this._iconRenderSource = request.source;
+
+        if (!iconName) {
             this.iconName = null;
             this.icon_holder.hide();
+            return;
+        }
+
+        const type = this.getIconType(iconName);
+        this.iconName = iconName;
+        const baseIconSize = this.applet.getPanelIconSize(type);
+        this.iconSize = this.applet.getScaledIconSize(baseIconSize);
+        this.proxy.icon_size = this.iconSize;
+
+        if (request.type === "file") {
+            this.renderFileIconRequest(request, generation);
+            return;
+        }
+
+        const icon = new St.Icon({
+            "icon-type": type,
+            "icon-size": this.iconSize,
+            "icon-name": iconName
+        });
+        this.icon_holder.show();
+        this.icon_holder.child = icon;
+    }
+
+    renderFileIconRequest(request, generation) {
+        try {
+            this.icon_loader_handle = St.TextureCache.get_default().load_image_from_file_async(
+                request.value,
+                /* If top/bottom panel, allow the image to expand horizontally,
+                 * otherwise, restrict it to a square (but keep aspect ratio.) */
+                this.actor.vertical ? this.iconSize : -1,
+                this.iconSize,
+                (cache, handle, actor, data) => this._onImageLoaded(cache, handle, actor, data, generation, request)
+            );
+        } catch (e) {
+            this.handleIconLoadFailure(request, generation, "Unable to load image file");
         }
     }
 
-    _onImageLoaded(cache, handle, actor, data=null) {
-        if (handle !== this.icon_loader_handle) {
-            global.logError(`fayoo-xapp-status@fayoo: Icon or image seems out of sync (${this.name}`);
+    _onImageLoaded(cache, handle, actor, data=null, generation=null, request=null) {
+        if (this._destroyed || this.actor.is_finalized()) {
+            return;
+        }
+
+        if (generation !== this._iconRenderGeneration || handle !== this.icon_loader_handle) {
+            return;
+        }
+
+        if (!actor || actor.is_finalized()) {
+            this.handleIconLoadFailure(request, generation, "Unable to load image file");
             return;
         }
 
         this.icon_holder.child = actor;
         this.icon_holder.show();
+    }
+
+    handleIconLoadFailure(request, generation, error) {
+        if (generation !== this._iconRenderGeneration || !request) {
+            return;
+        }
+
+        if (request.override && request.source !== "fallback-original") {
+            this.customIconValid = false;
+            this.customIconError = error;
+            this.displayIconSource = "fallback-original";
+            this.applet.scheduleTrayIconManagerRefresh();
+
+            const fallbackRequest = {
+                source: "fallback-original",
+                type: this.applet.getIconRenderType(request.fallbackValue),
+                value: request.fallbackValue,
+                fallbackValue: request.fallbackValue,
+                identity: request.identity,
+                override: request.override
+            };
+
+            this.renderIconRequest(fallbackRequest, generation);
+            return;
+        }
+
+        this.iconName = null;
+        this.icon_holder.hide();
     }
 
     setTooltipText(tooltipText) {
@@ -414,6 +506,8 @@ class XAppStatusIcon {
     }
 
     destroy() {
+        this._destroyed = true;
+        this._iconRenderGeneration++;
         this.proxy.disconnect(this._proxy_prop_change_id);
         this._proxy_prop_change_id = 0;
         this._tooltip.destroy();
@@ -447,7 +541,22 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         this.statusIcons = {};
         this.hiddenIconRules = [];
+        this.managedIconOrderRules = [];
         this.iconOrderRules = [];
+        this.effectiveIconOrderRules = [];
+        this.customIconOverrideMap = Object.create(null);
+        this.customIconOverrideRecords = [];
+        this._trayIconManagerDialog = null;
+        this._trayIconManagerContent = null;
+        this._trayIconManagerDescription = null;
+        this._trayIconManagerTooltips = [];
+        this._trayIconManagerRefreshId = 0;
+        this._trayIconManagerMode = "list";
+        this._trayIconEditorState = null;
+        this._managerDragging = false;
+        this._managerRefreshPending = false;
+        this._managerCurrentDropTarget = null;
+        this._managerDragSource = null;
 
         /* This doesn't really work 100% because applets get reloaded and we end up losing this
          * list. Not that big a deal in practice*/
@@ -487,11 +596,24 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             "iconOrder",
             () => this.onIconOrderChanged()
         );
+        this.settings.bind(
+            "managed-icon-order",
+            "managedIconOrder",
+            () => this.onManagedIconOrderChanged()
+        );
+        this.settings.bind(
+            "custom-icon-overrides",
+            "customIconOverrides",
+            () => this.onCustomIconOverridesChanged()
+        );
 
         this.rebuildHiddenIconRules();
+        this.rebuildManagedIconOrderRules();
         this.rebuildIconOrderRules();
+        this.rebuildCustomIconOverrides();
 
         this.buildTrayInfoMenuItem();
+        this.buildTrayManagerMenuItem();
     }
 
     getScaledIconSize(baseSize) {
@@ -592,6 +714,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         for (let key in this.statusIcons) {
             this.statusIcons[key].updateEffectiveVisibility();
         }
+
+        this.scheduleTrayIconManagerRefresh();
     }
 
     rebuildIconOrderRules() {
@@ -640,15 +764,601 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         }
 
         this.iconOrderRules = rules;
+        this.rebuildEffectiveIconOrderRules();
+    }
+
+    normalizeIconOrderRuleLine(line) {
+        const trimmed = String(line || "").trim();
+
+        if (!trimmed || trimmed.startsWith("#")) {
+            return null;
+        }
+
+        const separatorIndex = trimmed.indexOf(":");
+
+        if (separatorIndex <= 0) {
+            return null;
+        }
+
+        const field = trimmed.slice(0, separatorIndex).trim().toLowerCase();
+
+        if (["name", "icon", "tooltip", "label"].indexOf(field) === -1) {
+            return null;
+        }
+
+        const value = trimmed.slice(separatorIndex + 1).trim();
+
+        if (!value || /[\r\n]/.test(value)) {
+            return null;
+        }
+
+        return `${field}:${value.toLowerCase()}`;
+    }
+
+    rebuildManagedIconOrderRules() {
+        const rules = [];
+        const seen = Object.create(null);
+        const entries = Array.isArray(this.managedIconOrder) ? this.managedIconOrder : [];
+
+        for (let entry of entries) {
+            const normalized = this.normalizeIconOrderRuleLine(entry);
+
+            if (!normalized || seen[normalized]) {
+                continue;
+            }
+
+            const separatorIndex = normalized.indexOf(":");
+            const field = normalized.slice(0, separatorIndex);
+            const value = normalized.slice(separatorIndex + 1);
+
+            seen[normalized] = true;
+            rules.push({
+                field,
+                value,
+                rule: normalized,
+                rawRule: String(entry || "").trim(),
+                normalizedRule: normalized,
+                priority: rules.length,
+                source: "managed"
+            });
+        }
+
+        this.managedIconOrderRules = rules;
+        this.rebuildEffectiveIconOrderRules();
+    }
+
+    getManagedIconOrderRawRules() {
+        return Array.isArray(this.managedIconOrder)
+            ? this.managedIconOrder.slice()
+            : [];
+    }
+
+    setManagedIconOrder(newRules) {
+        this.managedIconOrder = Array.isArray(newRules) ? newRules.slice() : [];
+        this.rebuildManagedIconOrderRules();
+        this.sortIcons();
+        this.scheduleTrayIconManagerRefresh();
+    }
+
+    arraysAreEqual(a, b) {
+        if (a.length !== b.length) {
+            return false;
+        }
+
+        for (let i = 0; i < a.length; i++) {
+            if (a[i] !== b[i]) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    buildManagedOrderAfterInsert(sourceRawRule, sourceNormalizedRule, targetNormalizedRule) {
+        const originalRules = this.getManagedIconOrderRawRules();
+        const sourceRaw = String(sourceRawRule || "").trim();
+        const sourceNormalized = sourceNormalizedRule || this.normalizeIconOrderRuleLine(sourceRaw);
+
+        if (!sourceRaw || !sourceNormalized) {
+            return null;
+        }
+
+        if (targetNormalizedRule && targetNormalizedRule === sourceNormalized) {
+            return originalRules;
+        }
+
+        const withoutSource = [];
+        let insertIndex = null;
+
+        for (let rule of originalRules) {
+            const normalized = this.normalizeIconOrderRuleLine(rule);
+
+            if (normalized === sourceNormalized) {
+                continue;
+            }
+
+            if (targetNormalizedRule && normalized === targetNormalizedRule && insertIndex === null) {
+                insertIndex = withoutSource.length;
+            }
+
+            withoutSource.push(rule);
+        }
+
+        if (targetNormalizedRule && insertIndex === null) {
+            return null;
+        }
+
+        const nextRules = withoutSource.slice();
+        nextRules.splice(targetNormalizedRule ? insertIndex : nextRules.length, 0, sourceRaw);
+
+        return nextRules;
+    }
+
+    insertManagedIconRule(sourceRawRule, sourceNormalizedRule, targetNormalizedRule) {
+        const nextRules = this.buildManagedOrderAfterInsert(sourceRawRule, sourceNormalizedRule, targetNormalizedRule);
+
+        if (!nextRules) {
+            return false;
+        }
+
+        if (this.arraysAreEqual(this.getManagedIconOrderRawRules(), nextRules)) {
+            return true;
+        }
+
+        this.setManagedIconOrder(nextRules);
+        return true;
+    }
+
+    removeManagedIconRule(sourceNormalizedRule) {
+        if (!sourceNormalizedRule) {
+            return false;
+        }
+
+        const originalRules = this.getManagedIconOrderRawRules();
+        const nextRules = originalRules.filter(rule => this.normalizeIconOrderRuleLine(rule) !== sourceNormalizedRule);
+
+        if (this.arraysAreEqual(originalRules, nextRules)) {
+            return true;
+        }
+
+        this.setManagedIconOrder(nextRules);
+        return true;
+    }
+
+    isPlainSettingsObject(value) {
+        return Boolean(value && typeof value === "object" && !Array.isArray(value));
+    }
+
+    normalizeCustomIconRule(rule) {
+        return this.normalizeIconOrderRuleLine(rule);
+    }
+
+    getCustomIconIdentityRule(iconProxy) {
+        const orderRule = this.getStableIconRule(iconProxy);
+        const normalizedOrderRule = this.normalizeCustomIconRule(orderRule);
+
+        if (normalizedOrderRule) {
+            return normalizedOrderRule;
+        }
+
+        const hideRule = this.getRecommendedRule(iconProxy);
+        const normalizedHideRule = this.normalizeCustomIconRule(hideRule);
+
+        return normalizedHideRule || null;
+    }
+
+    normalizeCustomIconFilePath(value) {
+        const rawPath = String(value || "").trim();
+
+        if (!rawPath) {
+            return { path: "", error: "Empty file path" };
+        }
+
+        if (/[\r\n]/.test(rawPath)) {
+            return { path: rawPath, error: "File path must be a single line" };
+        }
+
+        let path = rawPath;
+
+        if (path === "~") {
+            return { path, error: "File path must be absolute" };
+        }
+
+        if (path.indexOf("~/") === 0) {
+            path = GLib.build_filenamev([GLib.get_home_dir(), path.slice(2)]);
+        }
+
+        if (!GLib.path_is_absolute(path)) {
+            return { path, error: "File path must be absolute" };
+        }
+
+        return { path, error: null };
+    }
+
+    validateCustomIconFile(value) {
+        const normalized = this.normalizeCustomIconFilePath(value);
+
+        if (normalized.error) {
+            return {
+                type: "file",
+                value: normalized.path,
+                valid: false,
+                error: normalized.error
+            };
+        }
+
+        const path = normalized.path;
+        const file = Gio.File.new_for_path(path);
+
+        if (!file.query_exists(null)) {
+            return {
+                type: "file",
+                value: path,
+                valid: false,
+                error: "File does not exist"
+            };
+        }
+
+        let fileType;
+        try {
+            fileType = file.query_file_type(Gio.FileQueryInfoFlags.NONE, null);
+        } catch (e) {
+            return {
+                type: "file",
+                value: path,
+                valid: false,
+                error: "Path is not a regular file"
+            };
+        }
+
+        if (fileType !== Gio.FileType.REGULAR) {
+            return {
+                type: "file",
+                value: path,
+                valid: false,
+                error: "Path is not a regular file"
+            };
+        }
+
+        const lowerPath = path.toLowerCase();
+
+        if (!lowerPath.endsWith(".png") && !lowerPath.endsWith(".svg")) {
+            return {
+                type: "file",
+                value: path,
+                valid: false,
+                error: "Unsupported file type"
+            };
+        }
+
+        return {
+            type: "file",
+            value: path,
+            valid: true,
+            error: null
+        };
+    }
+
+    hasThemeIcon(iconName) {
+        const theme = Gtk.IconTheme.get_default();
+
+        if (theme && theme.has_icon) {
+            return theme.has_icon(iconName);
+        }
+
+        if (theme && theme.lookup_icon) {
+            return Boolean(theme.lookup_icon(iconName, 16, 0));
+        }
+
+        return false;
+    }
+
+    validateCustomIconOverride(type, value) {
+        const normalizedType = String(type || "").trim().toLowerCase();
+        const stringValue = String(value || "").trim();
+
+        if (normalizedType !== "theme" && normalizedType !== "file") {
+            return {
+                type: normalizedType,
+                value: stringValue,
+                valid: false,
+                error: "Unsupported override type"
+            };
+        }
+
+        if (!stringValue) {
+            return {
+                type: normalizedType,
+                value: stringValue,
+                valid: false,
+                error: normalizedType === "file" ? "Empty file path" : "Empty theme icon name"
+            };
+        }
+
+        if (/[\r\n]/.test(stringValue)) {
+            return {
+                type: normalizedType,
+                value: stringValue,
+                valid: false,
+                error: normalizedType === "file" ? "File path must be a single line" : "Theme icon name must be a single line"
+            };
+        }
+
+        if (normalizedType === "file") {
+            return this.validateCustomIconFile(stringValue);
+        }
+
+        if (!this.hasThemeIcon(stringValue)) {
+            return {
+                type: "theme",
+                value: stringValue,
+                valid: false,
+                error: "Theme icon not found"
+            };
+        }
+
+        return {
+            type: "theme",
+            value: stringValue,
+            valid: true,
+            error: null
+        };
+    }
+
+    refreshCustomIconOverrideRecord(record) {
+        if (!record || !record.normalizedRule) {
+            return record;
+        }
+
+        const validation = this.validateCustomIconOverride(record.rawType, record.rawValue);
+        record.type = validation.type;
+        record.value = validation.value;
+        record.valid = validation.valid;
+        record.error = validation.error;
+
+        return record;
+    }
+
+    rebuildCustomIconOverrides() {
+        const overrides = this.isPlainSettingsObject(this.customIconOverrides)
+            ? this.customIconOverrides
+            : Object.create(null);
+        const records = [];
+        const map = Object.create(null);
+
+        for (let key in overrides) {
+            if (!Object.prototype.hasOwnProperty.call(overrides, key)) {
+                continue;
+            }
+
+            const normalizedRule = this.normalizeCustomIconRule(key);
+            const rawOverride = overrides[key];
+            let record = {
+                normalizedRule,
+                type: "",
+                value: "",
+                rawType: "",
+                rawValue: "",
+                valid: false,
+                error: null
+            };
+
+            if (!normalizedRule) {
+                record.error = "Invalid identity rule";
+                records.push(record);
+                continue;
+            }
+
+            if (!this.isPlainSettingsObject(rawOverride)) {
+                record.error = "Override value must be an object";
+                records.push(record);
+                map[normalizedRule] = record;
+                continue;
+            }
+
+            record.rawType = rawOverride.type;
+            record.rawValue = rawOverride.value;
+            this.refreshCustomIconOverrideRecord(record);
+
+            records.push(record);
+            map[normalizedRule] = record;
+        }
+
+        this.customIconOverrideRecords = records;
+        this.customIconOverrideMap = map;
+    }
+
+    onCustomIconOverridesChanged() {
+        this.rebuildCustomIconOverrides();
+        this.refreshCustomIconOverrides();
+    }
+
+    refreshCustomIconOverrides() {
+        if (this.statusIcons) {
+            for (let key in this.statusIcons) {
+                this.statusIcons[key].refresh();
+            }
+        }
+
+        this.scheduleTrayIconManagerRefresh();
+    }
+
+    getCustomIconOverride(iconProxy) {
+        const identity = this.getCustomIconIdentityRule(iconProxy);
+
+        if (!identity) {
+            return null;
+        }
+
+        const override = this.customIconOverrideMap[identity] || null;
+
+        if (override) {
+            this.refreshCustomIconOverrideRecord(override);
+        }
+
+        return override;
+    }
+
+    getIconRenderType(iconName) {
+        const value = String(iconName || "");
+
+        if (value.includes("/") && !value.toLowerCase().includes("symbolic")) {
+            return "file";
+        }
+
+        return "theme";
+    }
+
+    getIconRenderRequest(iconProxy, originalIconName) {
+        const identity = this.getCustomIconIdentityRule(iconProxy);
+        const override = identity ? this.getCustomIconOverride(iconProxy) : null;
+        const originalValue = originalIconName || "";
+
+        if (override && override.valid) {
+            return {
+                source: override.type === "file" ? "custom-file" : "custom-theme",
+                type: override.type,
+                value: override.value,
+                fallbackValue: originalValue,
+                identity,
+                override
+            };
+        }
+
+        return {
+            source: override ? "fallback-original" : "original",
+            type: this.getIconRenderType(originalValue),
+            value: originalValue,
+            fallbackValue: originalValue,
+            identity,
+            override
+        };
+    }
+
+    getCustomIconOverridesRawObject() {
+        const raw = this.isPlainSettingsObject(this.customIconOverrides)
+            ? this.customIconOverrides
+            : Object.create(null);
+        const copy = Object.create(null);
+
+        for (let key in raw) {
+            if (Object.prototype.hasOwnProperty.call(raw, key)) {
+                copy[key] = raw[key];
+            }
+        }
+
+        return copy;
+    }
+
+    setCustomIconOverride(rule, type, value) {
+        const normalizedRule = this.normalizeCustomIconRule(rule);
+
+        if (!normalizedRule) {
+            return false;
+        }
+
+        const validation = this.validateCustomIconOverride(type, value);
+
+        if (!validation.valid) {
+            return false;
+        }
+
+        const nextOverrides = this.getCustomIconOverridesRawObject();
+        nextOverrides[normalizedRule] = {
+            type: validation.type,
+            value: validation.value
+        };
+
+        this.customIconOverrides = nextOverrides;
+        this.onCustomIconOverridesChanged();
+
+        return true;
+    }
+
+    removeCustomIconOverride(rule) {
+        const normalizedRule = this.normalizeCustomIconRule(rule);
+
+        if (!normalizedRule) {
+            return false;
+        }
+
+        const raw = this.getCustomIconOverridesRawObject();
+        const nextOverrides = Object.create(null);
+        let removed = false;
+
+        for (let key in raw) {
+            if (!Object.prototype.hasOwnProperty.call(raw, key)) {
+                continue;
+            }
+
+            if (this.normalizeCustomIconRule(key) === normalizedRule) {
+                removed = true;
+                continue;
+            }
+
+            nextOverrides[key] = raw[key];
+        }
+
+        if (!removed) {
+            return false;
+        }
+
+        this.customIconOverrides = nextOverrides;
+        this.onCustomIconOverridesChanged();
+
+        return true;
+    }
+
+    rebuildEffectiveIconOrderRules() {
+        const rules = [];
+        const managedSeen = Object.create(null);
+
+        for (let rule of this.managedIconOrderRules || []) {
+            managedSeen[`${rule.field}:${rule.value}`] = true;
+            rules.push({
+                field: rule.field,
+                value: rule.value,
+                rule: `${rule.field}:${rule.value}`,
+                priority: rules.length,
+                source: "managed",
+                sourcePriority: rule.priority
+            });
+        }
+
+        for (let rule of this.iconOrderRules || []) {
+            const key = `${rule.field}:${rule.value}`;
+
+            if (managedSeen[key]) {
+                continue;
+            }
+
+            rules.push({
+                field: rule.field,
+                value: rule.value,
+                rule: key,
+                priority: rules.length,
+                source: "manual",
+                sourcePriority: rule.priority
+            });
+        }
+
+        this.effectiveIconOrderRules = rules;
+    }
+
+    onManagedIconOrderChanged() {
+        this.rebuildManagedIconOrderRules();
+        this.sortIcons();
+        this.scheduleTrayIconManagerRefresh();
     }
 
     onIconOrderChanged() {
         this.rebuildIconOrderRules();
         this.sortIcons();
+        this.scheduleTrayIconManagerRefresh();
     }
 
-    getIconOrderPriority(statusIcon) {
-        if (!this.iconOrderRules || this.iconOrderRules.length === 0) {
+    getIconOrderMatch(statusIcon) {
+        if (!this.effectiveIconOrderRules || this.effectiveIconOrderRules.length === 0) {
             return null;
         }
 
@@ -660,13 +1370,19 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             normalizedFields[field] = /[\r\n]/.test(value) ? null : value.toLowerCase();
         }
 
-        for (let rule of this.iconOrderRules) {
+        for (let rule of this.effectiveIconOrderRules) {
             if (normalizedFields[rule.field] && normalizedFields[rule.field] === rule.value) {
-                return rule.priority;
+                return rule;
             }
         }
 
         return null;
+    }
+
+    getIconOrderPriority(statusIcon) {
+        const match = this.getIconOrderMatch(statusIcon);
+
+        return match ? match.priority : null;
     }
 
     buildTrayInfoMenuItem() {
@@ -682,6 +1398,16 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         );
 
         this._applet_context_menu.addMenuItem(this._trayInfoItem);
+    }
+
+    buildTrayManagerMenuItem() {
+        this._trayManagerItem = new PopupMenu.PopupMenuItem("Manage Tray Icons...");
+        this._trayManagerActivateId = this._trayManagerItem.connect(
+            "activate",
+            Lang.bind(this, () => this.openTrayIconManager())
+        );
+
+        this._applet_context_menu.addMenuItem(this._trayManagerItem);
     }
 
     rebuildTrayInfoMenu() {
@@ -717,6 +1443,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
             const hidden = this.isStatusIconHidden(icon.proxy);
             const effective = Boolean(icon.applicationVisible) && !hidden;
+            const customIconDiagnostics = this.getCustomIconDiagnostics(icon);
 
             const fieldLines = [
                 { label: "name", value: fields.name },
@@ -725,7 +1452,12 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 { label: "label", value: fields.label },
                 { label: "application-visible", value: icon.applicationVisible ? "true" : "false" },
                 { label: "hidden-by-rule", value: hidden ? "true" : "false" },
-                { label: "effective-visible", value: effective ? "true" : "false" }
+                { label: "effective-visible", value: effective ? "true" : "false" },
+                { label: "custom-icon-identity", value: customIconDiagnostics.identity },
+                { label: "custom-icon-override", value: customIconDiagnostics.override },
+                { label: "custom-icon-valid", value: customIconDiagnostics.valid },
+                { label: "custom-icon-error", value: customIconDiagnostics.error },
+                { label: "display-icon-source", value: customIconDiagnostics.source }
             ];
 
             const recommendedRule = this.getRecommendedRule(icon.proxy);
@@ -840,6 +1572,66 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         const cleanLabel = label.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
         if (cleanLabel && cleanLabel.length >= 3) {
             return `label:${cleanLabel}`;
+        }
+
+        return null;
+    }
+
+    getStableIconRule(iconProxy) {
+        const fields = this.getStatusIconMatchFields(iconProxy);
+        const name = fields.name;
+        const icon = fields.icon;
+        const tooltip = fields.tooltip;
+        const label = fields.label;
+
+        if (name && name.length >= 3 && !/[\r\n]/.test(name) && !/^:\d+\.\d+$/.test(name)) {
+            return `name:${name}`;
+        }
+
+        if (icon &&
+            icon.length >= 3 &&
+            icon.indexOf("xapp-tmp-") === -1 &&
+            icon.indexOf("/tmp/") === -1 &&
+            icon.indexOf("/dev/shm/") === -1) {
+            return `icon:${icon}`;
+        }
+
+        if (tooltip && !/[\r\n]/.test(tooltip)) {
+            return `tooltip:${tooltip}`;
+        }
+
+        if (label && !/[\r\n]/.test(label)) {
+            return `label:${label}`;
+        }
+
+        return null;
+    }
+
+    getHiddenIconRuleMatch(iconProxy) {
+        if (this.hiddenIconRules.length === 0) {
+            return null;
+        }
+
+        const fields = this.getStatusIconMatchFields(iconProxy);
+        const lowerFields = {};
+
+        for (let field in fields) {
+            lowerFields[field] = fields[field].toLowerCase();
+        }
+
+        for (let rule of this.hiddenIconRules) {
+            if (rule.field) {
+                if (lowerFields[rule.field].includes(rule.value)) {
+                    return rule;
+                }
+            }
+            else {
+                for (let field in lowerFields) {
+                    if (lowerFields[field].includes(rule.value)) {
+                        return rule;
+                    }
+                }
+            }
         }
 
         return null;
@@ -982,11 +1774,33 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         return true;
     }
 
+    getCustomIconDiagnostics(icon) {
+        const override = icon.customIconOverride;
+        let overrideText = "none";
+        let validText = "unavailable";
+
+        if (override) {
+            const type = override.type || String(override.rawType || "").trim() || "invalid";
+            const value = override.value || String(override.rawValue || "").trim();
+            overrideText = value ? `${type}:${value}` : type;
+            validText = icon.customIconValid ? "true" : "false";
+        }
+
+        return {
+            identity: icon.customIconIdentity || "unavailable",
+            override: overrideText,
+            valid: validText,
+            error: icon.customIconError || "none",
+            source: icon.displayIconSource || "original"
+        };
+    }
+
     formatIconDiagnostics(icon) {
         const fields = this.getStatusIconMatchFields(icon.proxy);
         const hidden = this.isStatusIconHidden(icon.proxy);
         const effective = Boolean(icon.applicationVisible) && !hidden;
         const recommendedRule = this.getRecommendedRule(icon.proxy);
+        const customIconDiagnostics = this.getCustomIconDiagnostics(icon);
 
         const lines = [];
         lines.push(`name: ${fields.name || "(empty)"}`);
@@ -997,6 +1811,11 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         lines.push(`hidden-by-rule: ${hidden ? "true" : "false"}`);
         lines.push(`effective-visible: ${effective ? "true" : "false"}`);
         lines.push(`recommended-rule: ${recommendedRule || "unavailable"}`);
+        lines.push(`custom-icon-identity: ${customIconDiagnostics.identity}`);
+        lines.push(`custom-icon-override: ${customIconDiagnostics.override}`);
+        lines.push(`custom-icon-valid: ${customIconDiagnostics.valid}`);
+        lines.push(`custom-icon-error: ${customIconDiagnostics.error}`);
+        lines.push(`display-icon-source: ${customIconDiagnostics.source}`);
 
         return lines.join("\n");
     }
@@ -1018,6 +1837,1346 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         }
 
         return lines.join("\n");
+    }
+
+    statusIconMatchesOrderRule(statusIcon, rule) {
+        if (!statusIcon || !rule) {
+            return false;
+        }
+
+        const fields = this.getStatusIconMatchFields(statusIcon.proxy);
+        const value = String(fields[rule.field] || "").trim();
+
+        if (!value || /[\r\n]/.test(value)) {
+            return false;
+        }
+
+        return value.toLowerCase() === rule.value;
+    }
+
+    getActiveTrayIconManagerEntry(key, icon) {
+        const fields = this.getStatusIconMatchFields(icon.proxy);
+        const orderRule = this.getStableIconRule(icon.proxy);
+        const hideRule = this.getRecommendedRule(icon.proxy);
+        const customIconIdentity = this.getCustomIconIdentityRule(icon.proxy);
+        const orderMatch = this.getIconOrderMatch(icon);
+        const hiddenByAnyRule = this.isStatusIconHidden(icon.proxy);
+        const exactRulePresent = Boolean(hideRule) && this.isHiddenIconRuleAdded(hideRule);
+        const manualPriority = orderMatch && orderMatch.source === "manual"
+            ? orderMatch.sourcePriority
+            : null;
+
+        return {
+            rowType: "other",
+            icon,
+            key,
+            rawRule: orderRule,
+            normalizedRule: this.normalizeIconOrderRuleLine(orderRule),
+            orderRule,
+            hideRule,
+            displayIcon: fields.icon,
+            displayTitle: this.generateIconTitle(fields),
+            customIconIdentity,
+            customIconOverride: icon.customIconOverride,
+            customIconValid: icon.customIconValid,
+            customIconError: icon.customIconError,
+            displayIconSource: icon.displayIconSource,
+            customIconAffectedCount: 1,
+            applicationVisible: Boolean(icon.applicationVisible),
+            hiddenByAnyRule,
+            exactRulePresent,
+            hiddenByOtherRule: hiddenByAnyRule && !exactRulePresent,
+            effectiveVisible: Boolean(icon.applicationVisible) && !hiddenByAnyRule,
+            manualPriority,
+            advancedOrdered: manualPriority !== null,
+            matchedIcons: [icon],
+            active: true,
+            unavailable: false,
+            multipleMatches: false
+        };
+    }
+
+    getTrayIconManagerEntries() {
+        const activeEntries = [];
+
+        for (let key in this.statusIcons) {
+            activeEntries.push(this.getActiveTrayIconManagerEntry(key, this.statusIcons[key]));
+        }
+
+        const managedMatchedKeys = Object.create(null);
+        const managedEntries = [];
+
+        for (let rule of this.managedIconOrderRules || []) {
+            const matchedEntries = activeEntries.filter(entry => this.statusIconMatchesOrderRule(entry.icon, rule));
+            const multipleMatches = matchedEntries.length > 1;
+            const firstEntry = matchedEntries.length > 0 ? matchedEntries[0] : null;
+            const matchedCustomIdentities = [];
+            const seenCustomIdentities = Object.create(null);
+
+            for (let entry of matchedEntries) {
+                if (entry.customIconIdentity && !seenCustomIdentities[entry.customIconIdentity]) {
+                    seenCustomIdentities[entry.customIconIdentity] = true;
+                    matchedCustomIdentities.push(entry.customIconIdentity);
+                }
+            }
+
+            const customIconIdentity = matchedEntries.length === 0
+                ? rule.normalizedRule
+                : (matchedCustomIdentities.length === 1 ? matchedCustomIdentities[0] : null);
+            const customIconIdentityError = matchedEntries.length > 0 && matchedCustomIdentities.length !== 1
+                ? "Multiple custom icon identities"
+                : null;
+            const customIconOverride = customIconIdentity
+                ? (this.customIconOverrideMap[customIconIdentity] || null)
+                : null;
+
+            if (customIconOverride) {
+                this.refreshCustomIconOverrideRecord(customIconOverride);
+            }
+
+            const customIconEntry = matchedEntries.filter(entry => entry.customIconIdentity === customIconIdentity)[0] || null;
+            const customIconValid = customIconEntry && customIconEntry.customIconOverride
+                ? customIconEntry.customIconValid
+                : (customIconOverride ? Boolean(customIconOverride.valid) : null);
+            const customIconError = customIconEntry && customIconEntry.customIconOverride
+                ? customIconEntry.customIconError
+                : (customIconOverride ? customIconOverride.error : null);
+            const displayIconSource = customIconEntry
+                ? customIconEntry.displayIconSource
+                : (customIconOverride ? (customIconOverride.valid ? `custom-${customIconOverride.type}` : "fallback-original") : "original");
+            const customIconAffectedCount = customIconIdentity
+                ? matchedEntries.filter(entry => entry.customIconIdentity === customIconIdentity).length
+                : 0;
+
+            for (let entry of matchedEntries) {
+                managedMatchedKeys[entry.key] = true;
+            }
+
+            managedEntries.push({
+                rowType: "managed",
+                rawRule: rule.rawRule,
+                normalizedRule: rule.normalizedRule,
+                managedPriority: rule.priority,
+                matchedIcons: matchedEntries.map(entry => entry.icon),
+                active: matchedEntries.length > 0,
+                displayIcon: firstEntry ? firstEntry.displayIcon : "",
+                displayTitle: firstEntry ? firstEntry.displayTitle : rule.rawRule,
+                customIconIdentity,
+                customIconIdentityError,
+                customIconOverride,
+                customIconValid,
+                customIconError,
+                displayIconSource,
+                customIconAffectedCount,
+                applicationVisible: firstEntry ? firstEntry.applicationVisible : false,
+                orderRule: rule.rawRule,
+                hideRule: !multipleMatches && firstEntry ? firstEntry.hideRule : null,
+                hiddenByAnyRule: matchedEntries.some(entry => entry.hiddenByAnyRule),
+                exactRulePresent: !multipleMatches && firstEntry ? firstEntry.exactRulePresent : false,
+                hiddenByOtherRule: !multipleMatches && firstEntry ? firstEntry.hiddenByOtherRule : false,
+                effectiveVisible: firstEntry ? firstEntry.effectiveVisible : false,
+                manualPriority: null,
+                advancedOrdered: false,
+                unavailable: matchedEntries.length === 0,
+                multipleMatches
+            });
+        }
+
+        const otherEntries = activeEntries
+            .filter(entry => !managedMatchedKeys[entry.key])
+            .sort((a, b) => {
+                if (a.manualPriority !== null && b.manualPriority === null) {
+                    return -1;
+                }
+
+                if (b.manualPriority !== null && a.manualPriority === null) {
+                    return 1;
+                }
+
+                if (a.manualPriority !== null && b.manualPriority !== null && a.manualPriority !== b.manualPriority) {
+                    return a.manualPriority - b.manualPriority;
+                }
+
+                return this._sortFunc(a.icon, b.icon);
+            });
+
+        return {
+            managedEntries,
+            otherEntries
+        };
+    }
+
+    getCustomIconOverrideType(record) {
+        if (!record) {
+            return "";
+        }
+
+        return String(record.type || record.rawType || "").trim().toLowerCase();
+    }
+
+    getCustomIconOverrideValue(record) {
+        if (!record) {
+            return "";
+        }
+
+        return String(record.value || record.rawValue || "").trim();
+    }
+
+    getCustomIconOverrideSummary(record) {
+        if (!record) {
+            return "none";
+        }
+
+        const type = this.getCustomIconOverrideType(record) || "invalid";
+        const value = this.getCustomIconOverrideValue(record);
+
+        return value ? `${type}:${value}` : type;
+    }
+
+    getTrayIconManagerCustomIconStatus(entry) {
+        if (!entry.customIconIdentity) {
+            return entry.customIconIdentityError
+                ? `Custom icon: ${entry.customIconIdentityError}`
+                : "Custom icon: No stable identity";
+        }
+
+        if (!entry.customIconOverride) {
+            return "Custom icon: none";
+        }
+
+        const valid = entry.customIconValid !== null && entry.customIconValid !== undefined
+            ? Boolean(entry.customIconValid)
+            : Boolean(entry.customIconOverride.valid);
+        const summary = this.getCustomIconOverrideSummary(entry.customIconOverride);
+
+        if (valid) {
+            return `Custom icon: ${summary}`;
+        }
+
+        const error = entry.customIconError || entry.customIconOverride.error || "Unknown error";
+        return `Custom icon: invalid ${summary} (${error})`;
+    }
+
+    collectTrayIconManagerCustomIdentities(groups) {
+        const identities = Object.create(null);
+        const sections = [groups.managedEntries || [], groups.otherEntries || []];
+
+        for (let section of sections) {
+            for (let entry of section) {
+                if (entry.customIconIdentity) {
+                    identities[entry.customIconIdentity] = true;
+                }
+            }
+        }
+
+        return identities;
+    }
+
+    getInactiveCustomIconOverrideRecords(groups=null) {
+        const managerGroups = groups || this.getTrayIconManagerEntries();
+        const activeIdentities = this.collectTrayIconManagerCustomIdentities(managerGroups);
+        const inactiveRecords = [];
+
+        for (let record of this.customIconOverrideRecords || []) {
+            if (!record.normalizedRule || activeIdentities[record.normalizedRule]) {
+                continue;
+            }
+
+            this.refreshCustomIconOverrideRecord(record);
+            inactiveRecords.push(record);
+        }
+
+        inactiveRecords.sort((a, b) => GLib.utf8_collate(a.normalizedRule, b.normalizedRule));
+
+        return inactiveRecords;
+    }
+
+    getCustomIconEditorStateFromEntry(entry, returnMode) {
+        if (!entry || !entry.customIconIdentity) {
+            return null;
+        }
+
+        const record = entry.customIconOverride || this.customIconOverrideMap[entry.customIconIdentity] || null;
+
+        if (record) {
+            this.refreshCustomIconOverrideRecord(record);
+        }
+
+        const recordType = this.getCustomIconOverrideType(record);
+        const recordValue = this.getCustomIconOverrideValue(record);
+        const selectedType = recordType === "file" ? "file" : "theme";
+        const displayIcon = String(entry.displayIcon || "").trim();
+        const themeValue = recordType === "theme"
+            ? recordValue
+            : (displayIcon && displayIcon.indexOf("/") === -1 ? displayIcon : "");
+        const fileValue = recordType === "file" ? recordValue : "";
+
+        return {
+            identity: entry.customIconIdentity,
+            title: entry.displayTitle || entry.customIconIdentity,
+            affectedCount: Number(entry.customIconAffectedCount) || 0,
+            returnMode,
+            selectedType,
+            themeValue,
+            fileValue,
+            statusLabel: null
+        };
+    }
+
+    getCustomIconEditorStateFromRecord(record) {
+        if (!record || !record.normalizedRule) {
+            return null;
+        }
+
+        this.refreshCustomIconOverrideRecord(record);
+
+        const recordType = this.getCustomIconOverrideType(record);
+        const recordValue = this.getCustomIconOverrideValue(record);
+
+        return {
+            identity: record.normalizedRule,
+            title: record.normalizedRule,
+            affectedCount: 0,
+            returnMode: "inactive",
+            selectedType: recordType === "file" ? "file" : "theme",
+            themeValue: recordType === "theme" ? recordValue : "",
+            fileValue: recordType === "file" ? recordValue : "",
+            statusLabel: null
+        };
+    }
+
+    openCustomIconEditorForEntry(entry, returnMode="list") {
+        const state = this.getCustomIconEditorStateFromEntry(entry, returnMode);
+
+        if (!state) {
+            return;
+        }
+
+        this.cancelTrayIconManagerRefresh();
+        this.clearTrayIconManagerDragState();
+        this._trayIconEditorState = state;
+        this._trayIconManagerMode = "editor";
+        this.rebuildTrayIconManagerDialog();
+    }
+
+    openCustomIconEditorForRecord(record) {
+        const state = this.getCustomIconEditorStateFromRecord(record);
+
+        if (!state) {
+            return;
+        }
+
+        this.cancelTrayIconManagerRefresh();
+        this.clearTrayIconManagerDragState();
+        this._trayIconEditorState = state;
+        this._trayIconManagerMode = "editor";
+        this.rebuildTrayIconManagerDialog();
+    }
+
+    resetCustomIconOverrideFromEntry(entry, returnMode="list") {
+        if (!entry || !entry.customIconIdentity) {
+            return;
+        }
+
+        if (this.removeCustomIconOverride(entry.customIconIdentity)) {
+            this._trayIconManagerMode = returnMode;
+            this._trayIconEditorState = null;
+            this.rebuildTrayIconManagerDialog();
+        }
+    }
+
+    resetCustomIconOverrideFromRecord(record) {
+        if (!record || !record.normalizedRule) {
+            return;
+        }
+
+        if (this.removeCustomIconOverride(record.normalizedRule)) {
+            this._trayIconManagerMode = "inactive";
+            this._trayIconEditorState = null;
+            this.rebuildTrayIconManagerDialog();
+        }
+    }
+
+    openTrayIconManager() {
+        this._trayIconManagerMode = "list";
+        this._trayIconEditorState = null;
+
+        if (this._trayIconManagerDialog) {
+            this.rebuildTrayIconManagerDialog();
+            this._trayIconManagerDialog.open(global.get_current_time());
+            return;
+        }
+
+        const dialog = new ModalDialog.ModalDialog({
+            styleClass: "fayoo-xapp-status-manager-dialog",
+            destroyOnClose: false
+        });
+        this._trayIconManagerDialog = dialog;
+
+        const title = new St.Label({
+            style_class: "fayoo-xapp-status-manager-title",
+            text: "Tray Icon Manager"
+        });
+        dialog.contentLayout.add_actor(title);
+
+        const description = new St.Label({
+            style_class: "fayoo-xapp-status-manager-description",
+            text: "Drag tray icons into managed order, hide or show active icons, and set custom tray icons."
+        });
+        description.clutter_text.line_wrap = true;
+        this._trayIconManagerDescription = description;
+        dialog.contentLayout.add_actor(description);
+
+        const scrollView = new St.ScrollView({
+            style_class: "fayoo-xapp-status-manager-scrollview",
+            x_fill: true,
+            y_fill: true
+        });
+        this._trayIconManagerContent = new St.BoxLayout({
+            vertical: true,
+            style_class: "fayoo-xapp-status-manager-content"
+        });
+        scrollView.add_actor(this._trayIconManagerContent);
+        dialog.contentLayout.add_actor(scrollView);
+
+        dialog.setButtons([
+            {
+                label: "Close",
+                action: () => dialog.close(global.get_current_time()),
+                key: Clutter.KEY_Escape
+            }
+        ]);
+
+        this._trayIconManagerClosedId = dialog.connect("closed", Lang.bind(this, () => {
+            this.cancelTrayIconManagerRefresh();
+            this.clearTrayIconManagerDragState();
+            this._trayIconManagerMode = "list";
+            this._trayIconEditorState = null;
+        }));
+        this._trayIconManagerDestroyId = dialog.connect("destroy", Lang.bind(this, () => {
+            this.cancelTrayIconManagerRefresh();
+            this.clearTrayIconManagerDragState();
+            this.destroyTrayIconManagerTooltips();
+            this._trayIconManagerDialog = null;
+            this._trayIconManagerContent = null;
+            this._trayIconManagerDescription = null;
+            this._trayIconManagerMode = "list";
+            this._trayIconEditorState = null;
+            this._trayIconManagerClosedId = 0;
+            this._trayIconManagerDestroyId = 0;
+        }));
+
+        this.rebuildTrayIconManagerDialog();
+        dialog.open(global.get_current_time());
+    }
+
+    destroyTrayIconManagerTooltips() {
+        for (let tooltip of this._trayIconManagerTooltips || []) {
+            tooltip.destroy();
+        }
+
+        this._trayIconManagerTooltips = [];
+    }
+
+    rebuildTrayIconManagerDialog() {
+        if (!this._trayIconManagerDialog || !this._trayIconManagerContent) {
+            return;
+        }
+
+        this.destroyTrayIconManagerTooltips();
+        this._trayIconManagerContent.destroy_all_children();
+
+        if (this._trayIconManagerMode === "editor") {
+            this.rebuildCustomIconEditorDialog();
+            return;
+        }
+
+        if (this._trayIconManagerMode === "inactive") {
+            this.rebuildInactiveCustomIconOverridesDialog();
+            return;
+        }
+
+        this.rebuildTrayIconManagerListDialog();
+    }
+
+    setTrayIconManagerDescription(text) {
+        if (this._trayIconManagerDescription && !this._trayIconManagerDescription.is_finalized()) {
+            this._trayIconManagerDescription.set_text(text);
+        }
+    }
+
+    setTrayIconManagerCloseButtons() {
+        if (!this._trayIconManagerDialog) {
+            return;
+        }
+
+        this._trayIconManagerDialog.setButtons([
+            {
+                label: "Close",
+                action: () => this._trayIconManagerDialog.close(global.get_current_time()),
+                key: Clutter.KEY_Escape
+            }
+        ]);
+    }
+
+    rebuildTrayIconManagerListDialog() {
+        this.setTrayIconManagerDescription("Drag tray icons into managed order, hide or show active icons, and set custom tray icons.");
+        this.setTrayIconManagerCloseButtons();
+
+        const groups = this.getTrayIconManagerEntries();
+        this.addTrayIconManagerToolbar(groups);
+        this.addTrayIconManagerSection("Managed order", groups.managedEntries, "No managed entries yet.", "managed");
+        this.addTrayIconManagerSection("Other active icons", groups.otherEntries, "No active tray icons.", "other");
+    }
+
+    addTrayIconManagerToolbar(groups) {
+        const inactiveCount = this.getInactiveCustomIconOverrideRecords(groups).length;
+        const toolbar = new St.BoxLayout({
+            vertical: false,
+            style_class: "fayoo-xapp-status-manager-toolbar"
+        });
+
+        const label = new St.Label({
+            style_class: "fayoo-xapp-status-manager-row-detail",
+            text: inactiveCount === 1
+                ? "1 inactive custom icon override"
+                : `${inactiveCount} inactive custom icon overrides`
+        });
+        toolbar.add_actor(label);
+
+        const button = new St.Button({
+            label: "Inactive overrides",
+            reactive: true,
+            can_focus: inactiveCount > 0,
+            track_hover: true,
+            style_class: inactiveCount > 0
+                ? "fayoo-xapp-status-manager-button"
+                : "fayoo-xapp-status-manager-button fayoo-xapp-status-manager-button-disabled"
+        });
+
+        if (inactiveCount > 0) {
+            button.connect("clicked", Lang.bind(this, () => {
+                this.cancelTrayIconManagerRefresh();
+                this.clearTrayIconManagerDragState();
+                this._trayIconManagerMode = "inactive";
+                this._trayIconEditorState = null;
+                this.rebuildTrayIconManagerDialog();
+            }));
+        }
+
+        const tooltip = new Tooltips.Tooltip(button, inactiveCount > 0
+            ? "Manage custom icon overrides that are not shown in the active list"
+            : "No inactive custom icon overrides");
+        this._trayIconManagerTooltips.push(tooltip);
+        toolbar.add_actor(button);
+
+        this._trayIconManagerContent.add_actor(toolbar);
+    }
+
+    addTrayIconManagerSection(title, entries, emptyText, sectionType) {
+        const section = new St.BoxLayout({
+            vertical: true,
+            style_class: "fayoo-xapp-status-manager-section"
+        });
+        const header = new St.Label({
+            style_class: "fayoo-xapp-status-manager-section-title",
+            text: title
+        });
+        section.add_actor(header);
+
+        if (entries.length === 0) {
+            section.add_actor(new St.Label({
+                style_class: "fayoo-xapp-status-manager-empty",
+                text: emptyText
+            }));
+        } else {
+            for (let entry of entries) {
+                section.add_actor(this.createTrayIconManagerRow(entry));
+            }
+        }
+
+        if (sectionType === "managed") {
+            section.add_actor(this.createTrayIconManagerAppendDropZone(entries.length === 0));
+        } else if (sectionType === "other") {
+            section.add_actor(this.createTrayIconManagerRemoveDropZone());
+        }
+
+        this._trayIconManagerContent.add_actor(section);
+    }
+
+    createTrayIconManagerRow(entry) {
+        const row = new St.BoxLayout({
+            vertical: false,
+            reactive: true,
+            style_class: entry.unavailable
+                ? "fayoo-xapp-status-manager-row fayoo-xapp-status-manager-row-unavailable"
+                : "fayoo-xapp-status-manager-row"
+        });
+        row._delegate = this.createTrayIconManagerDropTarget("before", entry, row);
+
+        row.add_actor(this.createTrayIconManagerDragHandle(entry, row));
+        row.add_actor(this.createTrayIconManagerEyeButton(entry));
+
+        const iconName = entry.displayIcon && entry.displayIcon.indexOf("/") === -1 ? entry.displayIcon : "image-missing";
+        row.add_actor(new St.Icon({
+            icon_name: iconName,
+            icon_type: St.IconType.FULLCOLOR,
+            icon_size: 22,
+            style_class: "fayoo-xapp-status-manager-row-icon"
+        }));
+
+        const textBox = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style_class: "fayoo-xapp-status-manager-row-text"
+        });
+
+        const title = new St.Label({
+            style_class: "fayoo-xapp-status-manager-row-title",
+            text: entry.displayTitle
+        });
+        title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        textBox.add_actor(title);
+
+        const detailParts = [];
+        if (entry.unavailable) {
+            detailParts.push("Not currently active");
+        } else if (entry.multipleMatches) {
+            detailParts.push(`${entry.matchedIcons.length} active icons`);
+        } else {
+            detailParts.push(entry.effectiveVisible ? "Visible" : "Hidden");
+            if (!entry.applicationVisible) {
+                detailParts.push("App disabled visibility");
+            }
+            if (entry.hiddenByOtherRule) {
+                detailParts.push("Hidden by another rule");
+            }
+            if (entry.advancedOrdered) {
+                detailParts.push("Ordered by advanced rule");
+            }
+        }
+
+        if (entry.orderRule) {
+            detailParts.push(`Order rule: ${entry.orderRule}`);
+        } else {
+            detailParts.push("Order rule: No stable order identifier");
+        }
+
+        if (!entry.unavailable) {
+            if (entry.hideRule) {
+                detailParts.push(`Hide rule: ${entry.hideRule}`);
+            } else {
+                detailParts.push("Hide rule: No safe hide rule");
+            }
+        }
+
+        detailParts.push(this.getTrayIconManagerCustomIconStatus(entry));
+
+        if (entry.customIconIdentity && entry.rowType === "managed") {
+            const affectedCount = Number(entry.customIconAffectedCount) || 0;
+            detailParts.push(affectedCount === 1 ? "Affects 1 active icon" : `Affects ${affectedCount} active icons`);
+        }
+
+        const detail = new St.Label({
+            style_class: "fayoo-xapp-status-manager-row-detail",
+            text: detailParts.join(" - ")
+        });
+        detail.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        textBox.add_actor(detail);
+        row.add_actor(textBox);
+
+        row.add_actor(this.createTrayIconManagerChangeIconButton(entry));
+        row.add_actor(this.createTrayIconManagerResetIconButton(entry));
+
+        return row;
+    }
+
+    createTrayIconManagerDragHandle(entry, row) {
+        const draggable = entry.rowType === "managed" || Boolean(entry.orderRule);
+        const handle = new St.Button({
+            label: "☰",
+            reactive: true,
+            can_focus: draggable,
+            track_hover: true,
+            style_class: draggable
+                ? "fayoo-xapp-status-manager-drag-handle"
+                : "fayoo-xapp-status-manager-drag-handle fayoo-xapp-status-manager-drag-handle-disabled"
+        });
+
+        const tooltipText = draggable ? "Drag to reorder" : "No stable order identifier";
+        const tooltip = new Tooltips.Tooltip(handle, tooltipText);
+        this._trayIconManagerTooltips.push(tooltip);
+
+        if (!draggable) {
+            return handle;
+        }
+
+        const source = this.createTrayIconManagerDragSource(entry, row, handle);
+        handle._delegate = source;
+        const draggableHandle = DND.makeDraggable(handle);
+        draggableHandle.connect("drag-begin", Lang.bind(this, () => this.onTrayIconManagerDragBegin(source)));
+        draggableHandle.connect("drag-cancelled", Lang.bind(this, () => this.onTrayIconManagerDragFinished(source)));
+        draggableHandle.connect("drag-end", Lang.bind(this, () => this.onTrayIconManagerDragFinished(source)));
+
+        return handle;
+    }
+
+    createTrayIconManagerDragSource(entry, row, handle) {
+        return {
+            actor: handle,
+            rowActor: row,
+            sourceType: entry.rowType,
+            rawRule: entry.rawRule || entry.orderRule,
+            normalizedRule: entry.normalizedRule || this.normalizeIconOrderRuleLine(entry.orderRule),
+            originalManagedIndex: entry.rowType === "managed" ? entry.managedPriority : -1,
+            displayTitle: entry.displayTitle,
+            displayIcon: entry.displayIcon,
+
+            getDragActor: () => this.createTrayIconManagerDragActor(entry),
+            getDragActorSource: () => row
+        };
+    }
+
+    createTrayIconManagerDragActor(entry) {
+        const actor = new St.BoxLayout({
+            vertical: false,
+            style_class: "fayoo-xapp-status-manager-drag-actor"
+        });
+        const iconName = entry.displayIcon && entry.displayIcon.indexOf("/") === -1 ? entry.displayIcon : "image-missing";
+        actor.add_actor(new St.Icon({
+            icon_name: iconName,
+            icon_type: St.IconType.FULLCOLOR,
+            icon_size: 22
+        }));
+        const textBox = new St.BoxLayout({ vertical: true });
+        const title = new St.Label({ text: entry.displayTitle || "Tray icon" });
+        title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        textBox.add_actor(title);
+        const rule = new St.Label({
+            style_class: "fayoo-xapp-status-manager-row-detail",
+            text: entry.orderRule || entry.rawRule || "No stable order identifier"
+        });
+        rule.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        textBox.add_actor(rule);
+        actor.add_actor(textBox);
+
+        return actor;
+    }
+
+    createTrayIconManagerAppendDropZone(isEmpty) {
+        const zone = new St.BoxLayout({
+            vertical: false,
+            reactive: true,
+            style_class: "fayoo-xapp-status-manager-drop-zone"
+        });
+        zone.add_actor(new St.Label({
+            text: isEmpty ? "Drop here to add to managed order" : "Drop here to append"
+        }));
+        zone._delegate = this.createTrayIconManagerDropTarget("append", null, zone);
+
+        return zone;
+    }
+
+    createTrayIconManagerRemoveDropZone() {
+        const zone = new St.BoxLayout({
+            vertical: false,
+            reactive: true,
+            style_class: "fayoo-xapp-status-manager-drop-zone fayoo-xapp-status-manager-remove-zone"
+        });
+        zone.add_actor(new St.Label({ text: "Drop here to remove from managed order" }));
+        zone._delegate = this.createTrayIconManagerDropTarget("remove", null, zone);
+
+        return zone;
+    }
+
+    createTrayIconManagerDropTarget(targetType, entry, targetActor) {
+        return {
+            handleDragOver: (source, actor, x, y, time) => {
+                if (!this.isTrayIconManagerDragSource(source)) {
+                    return DND.DragMotionResult.CONTINUE;
+                }
+
+                if (targetType === "remove") {
+                    if (source.sourceType !== "managed") {
+                        return DND.DragMotionResult.NO_DROP;
+                    }
+
+                    this.setTrayIconManagerDropTarget(targetActor);
+                    return DND.DragMotionResult.MOVE_DROP;
+                }
+
+                if (!source.rawRule || !source.normalizedRule) {
+                    return DND.DragMotionResult.NO_DROP;
+                }
+
+                if (targetType === "before" && (!entry || entry.rowType !== "managed" || !entry.normalizedRule)) {
+                    return DND.DragMotionResult.NO_DROP;
+                }
+
+                this.setTrayIconManagerDropTarget(targetActor);
+                return DND.DragMotionResult.MOVE_DROP;
+            },
+
+            handleDragOut: () => {
+                if (this._managerCurrentDropTarget === targetActor) {
+                    this.clearTrayIconManagerDropTarget();
+                }
+            },
+
+            acceptDrop: (source, actor, x, y, time) => {
+                if (!this.isTrayIconManagerDragSource(source)) {
+                    return false;
+                }
+
+                this.clearTrayIconManagerDropTarget();
+
+                if (targetType === "remove") {
+                    if (source.sourceType !== "managed") {
+                        return false;
+                    }
+
+                    return this.removeManagedIconRule(source.normalizedRule);
+                }
+
+                if (!source.rawRule || !source.normalizedRule) {
+                    return false;
+                }
+
+                const targetNormalizedRule = targetType === "before" && entry ? entry.normalizedRule : null;
+                return this.insertManagedIconRule(source.rawRule, source.normalizedRule, targetNormalizedRule);
+            }
+        };
+    }
+
+    isTrayIconManagerDragSource(source) {
+        return Boolean(source &&
+            (source.sourceType === "managed" || source.sourceType === "other") &&
+            source.normalizedRule);
+    }
+
+    setTrayIconManagerDropTarget(actor) {
+        if (this._managerCurrentDropTarget === actor) {
+            return;
+        }
+
+        this.clearTrayIconManagerDropTarget();
+        this._managerCurrentDropTarget = actor;
+
+        if (actor && !actor.is_finalized()) {
+            actor.add_style_class_name("fayoo-xapp-status-manager-drop-hover");
+        }
+    }
+
+    clearTrayIconManagerDropTarget() {
+        if (this._managerCurrentDropTarget && !this._managerCurrentDropTarget.is_finalized()) {
+            this._managerCurrentDropTarget.remove_style_class_name("fayoo-xapp-status-manager-drop-hover");
+        }
+
+        this._managerCurrentDropTarget = null;
+    }
+
+    onTrayIconManagerDragBegin(source) {
+        this._managerDragging = true;
+        this._managerDragSource = source;
+
+        if (source.rowActor && !source.rowActor.is_finalized()) {
+            source.rowActor.add_style_class_name("fayoo-xapp-status-manager-row-dragging");
+        }
+    }
+
+    onTrayIconManagerDragFinished(source) {
+        if (!this._managerDragging) {
+            return;
+        }
+
+        if (source && source.rowActor && !source.rowActor.is_finalized()) {
+            source.rowActor.remove_style_class_name("fayoo-xapp-status-manager-row-dragging");
+        }
+
+        this.clearTrayIconManagerDropTarget();
+        this._managerDragging = false;
+        this._managerDragSource = null;
+
+        if (this._managerRefreshPending) {
+            this._managerRefreshPending = false;
+            this.scheduleTrayIconManagerRefresh();
+        }
+    }
+
+    createTrayIconManagerEyeButton(entry) {
+        let label = entry.effectiveVisible ? "Hide" : "Show";
+        let tooltipText = entry.effectiveVisible ? "Hide this tray icon" : "Show this tray icon";
+        let disabled = false;
+        let action = null;
+
+        if (entry.unavailable) {
+            label = "-";
+            tooltipText = "Not currently active";
+            disabled = true;
+        } else if (entry.multipleMatches) {
+            label = "-";
+            tooltipText = "Multiple icons match this order rule";
+            disabled = true;
+        } else if (!entry.hideRule) {
+            label = "-";
+            tooltipText = "No safe hide rule";
+            disabled = true;
+        } else if (entry.exactRulePresent) {
+            label = "Show";
+            tooltipText = "Remove exact hide rule";
+            action = () => this.removeHiddenIconRule(entry.hideRule);
+        } else if (entry.hiddenByOtherRule) {
+            label = "-";
+            tooltipText = "Hidden by another rule";
+            disabled = true;
+        } else {
+            label = "Hide";
+            tooltipText = "Add exact hide rule";
+            action = () => this.addHiddenIconRule(entry.hideRule);
+        }
+
+        const button = new St.Button({
+            label,
+            reactive: true,
+            can_focus: !disabled,
+            track_hover: true,
+            style_class: disabled
+                ? "fayoo-xapp-status-manager-eye-button fayoo-xapp-status-manager-eye-button-disabled"
+                : "fayoo-xapp-status-manager-eye-button"
+        });
+
+        if (action) {
+            button.connect("clicked", Lang.bind(this, () => {
+                if (action()) {
+                    this.rebuildTrayIconManagerDialog();
+                }
+            }));
+        }
+
+        const tooltip = new Tooltips.Tooltip(button, tooltipText);
+        this._trayIconManagerTooltips.push(tooltip);
+
+        return button;
+    }
+
+    createTrayIconManagerChangeIconButton(entry) {
+        const disabled = !entry.customIconIdentity;
+        const button = new St.Button({
+            label: "Change icon...",
+            reactive: true,
+            can_focus: !disabled,
+            track_hover: true,
+            style_class: disabled
+                ? "fayoo-xapp-status-manager-button fayoo-xapp-status-manager-button-disabled"
+                : "fayoo-xapp-status-manager-button"
+        });
+
+        if (!disabled) {
+            button.connect("clicked", Lang.bind(this, () => {
+                this.openCustomIconEditorForEntry(entry, "list");
+            }));
+        }
+
+        const tooltip = new Tooltips.Tooltip(button, disabled
+            ? "No stable custom icon identity"
+            : `Change custom icon for ${entry.customIconIdentity}`);
+        this._trayIconManagerTooltips.push(tooltip);
+
+        return button;
+    }
+
+    createTrayIconManagerResetIconButton(entry) {
+        const disabled = !entry.customIconIdentity || !entry.customIconOverride;
+        const button = new St.Button({
+            label: "Reset icon",
+            reactive: true,
+            can_focus: !disabled,
+            track_hover: true,
+            style_class: disabled
+                ? "fayoo-xapp-status-manager-button fayoo-xapp-status-manager-button-disabled"
+                : "fayoo-xapp-status-manager-button"
+        });
+
+        if (!disabled) {
+            button.connect("clicked", Lang.bind(this, () => {
+                this.resetCustomIconOverrideFromEntry(entry, "list");
+            }));
+        }
+
+        const tooltip = new Tooltips.Tooltip(button, disabled
+            ? "No custom icon override to reset"
+            : `Reset custom icon for ${entry.customIconIdentity}`);
+        this._trayIconManagerTooltips.push(tooltip);
+
+        return button;
+    }
+
+    createCustomIconEditorTypeButton(type, label) {
+        const state = this._trayIconEditorState;
+        const selected = state && state.selectedType === type;
+        const button = new St.Button({
+            label,
+            reactive: true,
+            can_focus: true,
+            track_hover: true,
+            style_class: selected
+                ? "fayoo-xapp-status-manager-type-button fayoo-xapp-status-manager-type-button-selected"
+                : "fayoo-xapp-status-manager-type-button"
+        });
+
+        button.connect("clicked", Lang.bind(this, () => {
+            if (!this._trayIconEditorState) {
+                return;
+            }
+
+            this._trayIconEditorState.selectedType = type;
+            this.rebuildTrayIconManagerDialog();
+        }));
+
+        return button;
+    }
+
+    addCustomIconEditorEntryRow(container, labelText, entry) {
+        const row = new St.BoxLayout({
+            vertical: false,
+            style_class: "fayoo-xapp-status-manager-editor-row"
+        });
+        row.add_actor(new St.Label({
+            text: labelText,
+            style_class: "fayoo-xapp-status-manager-editor-label"
+        }));
+        row.add_actor(entry);
+        container.add_actor(row);
+    }
+
+    getCustomIconEditorSelectedValue() {
+        const state = this._trayIconEditorState;
+
+        if (!state) {
+            return "";
+        }
+
+        return state.selectedType === "file" ? state.fileValue : state.themeValue;
+    }
+
+    updateCustomIconEditorValidation() {
+        const state = this._trayIconEditorState;
+
+        if (!state || !state.statusLabel || state.statusLabel.is_finalized()) {
+            return false;
+        }
+
+        const validation = this.validateCustomIconOverride(state.selectedType, this.getCustomIconEditorSelectedValue());
+
+        if (validation.valid) {
+            state.statusLabel.remove_style_class_name("fayoo-xapp-status-manager-editor-status-error");
+            state.statusLabel.set_text(`Ready to save ${validation.type}:${validation.value}`);
+            return true;
+        }
+
+        state.statusLabel.add_style_class_name("fayoo-xapp-status-manager-editor-status-error");
+        state.statusLabel.set_text(validation.error || "Invalid custom icon override");
+        return false;
+    }
+
+    applyCustomIconEditor() {
+        const state = this._trayIconEditorState;
+
+        if (!state || !state.identity) {
+            return;
+        }
+
+        const validation = this.validateCustomIconOverride(state.selectedType, this.getCustomIconEditorSelectedValue());
+
+        if (!validation.valid) {
+            this.updateCustomIconEditorValidation();
+            return;
+        }
+
+        if (!this.setCustomIconOverride(state.identity, validation.type, validation.value)) {
+            if (state.statusLabel && !state.statusLabel.is_finalized()) {
+                state.statusLabel.add_style_class_name("fayoo-xapp-status-manager-editor-status-error");
+                state.statusLabel.set_text("Unable to save custom icon override");
+            }
+            return;
+        }
+
+        const returnMode = state.returnMode === "inactive" ? "inactive" : "list";
+        this._trayIconManagerMode = returnMode;
+        this._trayIconEditorState = null;
+        this.rebuildTrayIconManagerDialog();
+    }
+
+    cancelCustomIconEditor() {
+        const state = this._trayIconEditorState;
+        const returnMode = state && state.returnMode === "inactive" ? "inactive" : "list";
+
+        this._trayIconManagerMode = returnMode;
+        this._trayIconEditorState = null;
+        this.rebuildTrayIconManagerDialog();
+    }
+
+    rebuildCustomIconEditorDialog() {
+        const state = this._trayIconEditorState;
+
+        if (!state || !state.identity) {
+            this._trayIconManagerMode = "list";
+            this._trayIconEditorState = null;
+            this.rebuildTrayIconManagerDialog();
+            return;
+        }
+
+        this.setTrayIconManagerDescription("Set a theme icon name or an absolute PNG/SVG file path. Invalid values are not saved.");
+        this._trayIconManagerDialog.setButtons([
+            {
+                label: "Cancel",
+                action: () => this.cancelCustomIconEditor(),
+                key: Clutter.KEY_Escape
+            },
+            {
+                label: "Apply",
+                action: () => this.applyCustomIconEditor(),
+                key: Clutter.KEY_Return,
+                default: true
+            }
+        ]);
+
+        const editor = new St.BoxLayout({
+            vertical: true,
+            style_class: "fayoo-xapp-status-manager-editor"
+        });
+
+        const title = new St.Label({
+            style_class: "fayoo-xapp-status-manager-section-title",
+            text: `Change icon: ${state.title}`
+        });
+        title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        editor.add_actor(title);
+
+        const identity = new St.Label({
+            style_class: "fayoo-xapp-status-manager-row-detail",
+            text: `Identity: ${state.identity}`
+        });
+        identity.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        editor.add_actor(identity);
+
+        const affectedText = state.affectedCount === 1
+            ? "Affects 1 active icon"
+            : `Affects ${state.affectedCount} active icons`;
+        editor.add_actor(new St.Label({
+            style_class: "fayoo-xapp-status-manager-row-detail",
+            text: affectedText
+        }));
+
+        const typeRow = new St.BoxLayout({
+            vertical: false,
+            style_class: "fayoo-xapp-status-manager-type-row"
+        });
+        typeRow.add_actor(new St.Label({
+            text: "Source:",
+            style_class: "fayoo-xapp-status-manager-editor-label"
+        }));
+        typeRow.add_actor(this.createCustomIconEditorTypeButton("theme", "Theme icon name"));
+        typeRow.add_actor(this.createCustomIconEditorTypeButton("file", "PNG/SVG file path"));
+        editor.add_actor(typeRow);
+
+        const themeEntry = new St.Entry({
+            text: state.themeValue,
+            can_focus: true,
+            track_hover: true,
+            x_expand: true,
+            style_class: "fayoo-xapp-status-manager-editor-entry"
+        });
+        const fileEntry = new St.Entry({
+            text: state.fileValue,
+            can_focus: true,
+            track_hover: true,
+            x_expand: true,
+            style_class: "fayoo-xapp-status-manager-editor-entry"
+        });
+
+        themeEntry.clutter_text.connect("text-changed", Lang.bind(this, () => {
+            state.themeValue = themeEntry.get_text();
+            this.updateCustomIconEditorValidation();
+        }));
+        fileEntry.clutter_text.connect("text-changed", Lang.bind(this, () => {
+            state.fileValue = fileEntry.get_text();
+            this.updateCustomIconEditorValidation();
+        }));
+        themeEntry.clutter_text.connect("activate", Lang.bind(this, () => this.applyCustomIconEditor()));
+        fileEntry.clutter_text.connect("activate", Lang.bind(this, () => this.applyCustomIconEditor()));
+
+        this.addCustomIconEditorEntryRow(editor, "Theme:", themeEntry);
+        this.addCustomIconEditorEntryRow(editor, "File:", fileEntry);
+
+        const status = new St.Label({
+            style_class: "fayoo-xapp-status-manager-editor-status",
+            text: ""
+        });
+        status.clutter_text.line_wrap = true;
+        state.statusLabel = status;
+        editor.add_actor(status);
+
+        this._trayIconManagerContent.add_actor(editor);
+
+        const selectedEntry = state.selectedType === "file" ? fileEntry : themeEntry;
+        this._trayIconManagerDialog.setInitialKeyFocus(selectedEntry);
+        if (this._trayIconManagerDialog.state === ModalDialog.State.OPENED && !selectedEntry.is_finalized()) {
+            global.stage.set_key_focus(selectedEntry);
+        }
+
+        this.updateCustomIconEditorValidation();
+    }
+
+    rebuildInactiveCustomIconOverridesDialog() {
+        this.setTrayIconManagerDescription("Manage custom icon overrides that are not currently shown in the active or managed rows.");
+        this._trayIconManagerDialog.setButtons([
+            {
+                label: "Back",
+                action: () => {
+                    this._trayIconManagerMode = "list";
+                    this._trayIconEditorState = null;
+                    this.rebuildTrayIconManagerDialog();
+                },
+                key: Clutter.KEY_Escape
+            },
+            {
+                label: "Close",
+                action: () => this._trayIconManagerDialog.close(global.get_current_time())
+            }
+        ]);
+
+        const records = this.getInactiveCustomIconOverrideRecords();
+        const section = new St.BoxLayout({
+            vertical: true,
+            style_class: "fayoo-xapp-status-manager-section"
+        });
+        section.add_actor(new St.Label({
+            style_class: "fayoo-xapp-status-manager-section-title",
+            text: "Inactive Custom Icon Overrides"
+        }));
+
+        if (records.length === 0) {
+            section.add_actor(new St.Label({
+                style_class: "fayoo-xapp-status-manager-empty",
+                text: "No inactive custom icon overrides."
+            }));
+        } else {
+            for (let record of records) {
+                section.add_actor(this.createInactiveCustomIconOverrideRow(record));
+            }
+        }
+
+        this._trayIconManagerContent.add_actor(section);
+    }
+
+    createInactiveCustomIconOverrideRow(record) {
+        const row = new St.BoxLayout({
+            vertical: false,
+            reactive: true,
+            style_class: "fayoo-xapp-status-manager-row"
+        });
+
+        const textBox = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style_class: "fayoo-xapp-status-manager-row-text"
+        });
+        const title = new St.Label({
+            style_class: "fayoo-xapp-status-manager-row-title",
+            text: record.normalizedRule
+        });
+        title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        textBox.add_actor(title);
+
+        const detailEntry = {
+            customIconIdentity: record.normalizedRule,
+            customIconOverride: record,
+            customIconValid: record.valid,
+            customIconError: record.error
+        };
+        const detail = new St.Label({
+            style_class: "fayoo-xapp-status-manager-row-detail",
+            text: `${this.getTrayIconManagerCustomIconStatus(detailEntry)} - Affects 0 active icons`
+        });
+        detail.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        textBox.add_actor(detail);
+        row.add_actor(textBox);
+
+        const changeButton = new St.Button({
+            label: "Change icon...",
+            reactive: true,
+            can_focus: true,
+            track_hover: true,
+            style_class: "fayoo-xapp-status-manager-button"
+        });
+        changeButton.connect("clicked", Lang.bind(this, () => this.openCustomIconEditorForRecord(record)));
+        row.add_actor(changeButton);
+
+        const resetButton = new St.Button({
+            label: "Reset icon",
+            reactive: true,
+            can_focus: true,
+            track_hover: true,
+            style_class: "fayoo-xapp-status-manager-button"
+        });
+        resetButton.connect("clicked", Lang.bind(this, () => this.resetCustomIconOverrideFromRecord(record)));
+        row.add_actor(resetButton);
+
+        return row;
+    }
+
+    scheduleTrayIconManagerRefresh() {
+        if (!this._trayIconManagerDialog || !this._trayIconManagerContent) {
+            return;
+        }
+
+        if (this._trayIconManagerMode !== "list") {
+            return;
+        }
+
+        if (this._managerDragging) {
+            this._managerRefreshPending = true;
+            return;
+        }
+
+        if (this._trayIconManagerDialog.state !== ModalDialog.State.OPENED &&
+            this._trayIconManagerDialog.state !== ModalDialog.State.OPENING) {
+            return;
+        }
+
+        if (this._trayIconManagerRefreshId > 0) {
+            return;
+        }
+
+        this._trayIconManagerRefreshId = Mainloop.idle_add(() => {
+            this._trayIconManagerRefreshId = 0;
+            this.rebuildTrayIconManagerDialog();
+
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    cancelTrayIconManagerRefresh() {
+        if (this._trayIconManagerRefreshId > 0) {
+            Mainloop.source_remove(this._trayIconManagerRefreshId);
+            this._trayIconManagerRefreshId = 0;
+        }
+
+        this._managerRefreshPending = false;
+    }
+
+    clearTrayIconManagerDragState() {
+        if (this._managerDragSource &&
+            this._managerDragSource.rowActor &&
+            !this._managerDragSource.rowActor.is_finalized()) {
+            this._managerDragSource.rowActor.remove_style_class_name("fayoo-xapp-status-manager-row-dragging");
+        }
+
+        this.clearTrayIconManagerDropTarget();
+        this._managerDragging = false;
+        this._managerRefreshPending = false;
+        this._managerDragSource = null;
     }
 
     setContainerOrientationClass(orientation) {
@@ -1104,6 +3263,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         this.statusIcons[key] = statusIcon;
 
         this.sortIcons();
+        this.scheduleTrayIconManagerRefresh();
     }
 
     removeStatusIcon(icon_proxy) {
@@ -1118,6 +3278,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         delete this.statusIcons[key];
 
         this.sortIcons();
+        this.scheduleTrayIconManagerRefresh();
     }
 
     ignoreStatusIcon(icon_proxy) {
@@ -1246,6 +3407,27 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     }
 
     on_applet_removed_from_panel() {
+        if (this._trayIconManagerDialog) {
+            this.cancelTrayIconManagerRefresh();
+            this.clearTrayIconManagerDragState();
+            this.destroyTrayIconManagerTooltips();
+            this._trayIconManagerDialog.destroy();
+            this._trayIconManagerDialog = null;
+            this._trayIconManagerContent = null;
+            this._trayIconManagerDescription = null;
+            this._trayIconManagerMode = "list";
+            this._trayIconEditorState = null;
+        }
+
+        if (this._trayManagerItem) {
+            if (this._trayManagerActivateId) {
+                this._trayManagerItem.disconnect(this._trayManagerActivateId);
+                this._trayManagerActivateId = 0;
+            }
+            this._trayManagerItem.destroy();
+            this._trayManagerItem = null;
+        }
+
         if (this._trayInfoItem && this._trayInfoConnectId) {
             this._trayInfoItem.menu.disconnect(this._trayInfoConnectId);
             this._trayInfoConnectId = 0;
