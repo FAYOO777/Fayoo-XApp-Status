@@ -2,7 +2,18 @@
 
 ## Unreleased
 
-- None.
+### Added
+
+- Added state-aware custom tray icon overrides under `custom-icon-overrides`.
+- Added `State icon...` editing from Tray Icon Manager rows for the current generated state rule.
+- Added `Reset State` from the state icon editor.
+- Added diagnostics for custom icon scope, current state rule, matched state rule, and state override.
+
+### Changed
+
+- Existing single custom icon overrides remain the default override for an identity.
+- State icon overrides take priority over default overrides when the current original icon rule matches.
+- Temporary original icon paths fall back to generated tooltip or label state rules.
 
 ## [0.3.0] - 2026-07-16
 

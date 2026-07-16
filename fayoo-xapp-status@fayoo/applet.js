@@ -121,6 +121,10 @@ class XAppStatusIcon {
         this.originalIconName = null;
         this.customIconIdentity = null;
         this.customIconOverride = null;
+        this.customIconOverrideScope = null;
+        this.customIconCurrentStateRule = null;
+        this.customIconMatchedStateRule = null;
+        this.customIconStateOverride = null;
         this.customIconValid = null;
         this.customIconError = null;
         this.displayIconSource = "original";
@@ -263,6 +267,10 @@ class XAppStatusIcon {
 
         this.customIconIdentity = request.identity || null;
         this.customIconOverride = request.override || null;
+        this.customIconOverrideScope = request.overrideScope || null;
+        this.customIconCurrentStateRule = request.currentStateRule || null;
+        this.customIconMatchedStateRule = request.matchedStateRule || null;
+        this.customIconStateOverride = request.stateOverride || null;
         this.customIconValid = request.override ? Boolean(request.override.valid) : null;
         this.customIconError = request.override ? (request.override.error || null) : null;
         this.displayIconSource = request.source || "original";
@@ -358,7 +366,11 @@ class XAppStatusIcon {
                 value: request.fallbackValue,
                 fallbackValue: request.fallbackValue,
                 identity: request.identity,
-                override: request.override
+                override: request.override,
+                overrideScope: request.overrideScope,
+                currentStateRule: request.currentStateRule,
+                matchedStateRule: request.matchedStateRule,
+                stateOverride: request.stateOverride
             };
 
             this.renderIconRequest(fallbackRequest, generation);
@@ -1105,8 +1117,130 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         };
     }
 
+    isCustomIconOverrideLeaf(value) {
+        if (!this.isPlainSettingsObject(value)) {
+            return false;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(value, "default") ||
+            Object.prototype.hasOwnProperty.call(value, "states")) {
+            return false;
+        }
+
+        return Object.prototype.hasOwnProperty.call(value, "type") ||
+            Object.prototype.hasOwnProperty.call(value, "value");
+    }
+
+    copyCustomIconLeaf(rawOverride) {
+        if (!this.isPlainSettingsObject(rawOverride)) {
+            return null;
+        }
+
+        return {
+            type: rawOverride.type,
+            value: rawOverride.value
+        };
+    }
+
+    getCustomIconDefaultRawOverride(rawOverride) {
+        if (this.isCustomIconOverrideLeaf(rawOverride)) {
+            return this.copyCustomIconLeaf(rawOverride);
+        }
+
+        if (this.isPlainSettingsObject(rawOverride) && this.isCustomIconOverrideLeaf(rawOverride.default)) {
+            return this.copyCustomIconLeaf(rawOverride.default);
+        }
+
+        return null;
+    }
+
+    getCustomIconStatesRawObject(rawOverride) {
+        const states = Object.create(null);
+
+        if (!this.isPlainSettingsObject(rawOverride) || !this.isPlainSettingsObject(rawOverride.states)) {
+            return states;
+        }
+
+        for (let stateRule in rawOverride.states) {
+            if (!Object.prototype.hasOwnProperty.call(rawOverride.states, stateRule)) {
+                continue;
+            }
+
+            const normalizedStateRule = this.normalizeCustomIconRule(stateRule);
+
+            if (!normalizedStateRule) {
+                continue;
+            }
+
+            states[normalizedStateRule] = this.copyCustomIconLeaf(rawOverride.states[stateRule]) || rawOverride.states[stateRule];
+        }
+
+        return states;
+    }
+
+    buildCustomIconRawOverride(defaultOverride, states) {
+        const stateKeys = Object.keys(states || {});
+
+        if (stateKeys.length === 0) {
+            return defaultOverride ? this.copyCustomIconLeaf(defaultOverride) : null;
+        }
+
+        const rawOverride = Object.create(null);
+
+        if (defaultOverride) {
+            rawOverride.default = this.copyCustomIconLeaf(defaultOverride);
+        }
+
+        rawOverride.states = Object.create(null);
+        for (let stateKey of stateKeys) {
+            rawOverride.states[stateKey] = this.copyCustomIconLeaf(states[stateKey]) || states[stateKey];
+        }
+
+        return rawOverride;
+    }
+
+    createCustomIconLeafRecord(normalizedRule, rawOverride, scope="default", stateRule=null) {
+        const record = {
+            normalizedRule,
+            scope,
+            stateRule,
+            type: "",
+            value: "",
+            rawType: "",
+            rawValue: "",
+            valid: false,
+            error: null
+        };
+
+        if (!this.isPlainSettingsObject(rawOverride)) {
+            record.error = "Override value must be an object";
+            return record;
+        }
+
+        record.rawType = rawOverride.type;
+        record.rawValue = rawOverride.value;
+        this.refreshCustomIconOverrideRecord(record);
+
+        return record;
+    }
+
+    copyCustomIconLeafRecordFields(target, source) {
+        target.scope = source.scope;
+        target.stateRule = source.stateRule;
+        target.type = source.type;
+        target.value = source.value;
+        target.rawType = source.rawType;
+        target.rawValue = source.rawValue;
+        target.valid = source.valid;
+        target.error = source.error;
+    }
+
     refreshCustomIconOverrideRecord(record) {
         if (!record || !record.normalizedRule) {
+            return record;
+        }
+
+        if (record.scope === "identity" && !record.hasDefaultOverride) {
             return record;
         }
 
@@ -1135,12 +1269,18 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             const rawOverride = overrides[key];
             let record = {
                 normalizedRule,
+                scope: "identity",
+                stateRule: null,
                 type: "",
                 value: "",
                 rawType: "",
                 rawValue: "",
                 valid: false,
-                error: null
+                error: null,
+                hasDefaultOverride: false,
+                defaultOverride: null,
+                stateOverrides: [],
+                stateOverrideMap: Object.create(null)
             };
 
             if (!normalizedRule) {
@@ -1156,9 +1296,46 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 continue;
             }
 
-            record.rawType = rawOverride.type;
-            record.rawValue = rawOverride.value;
-            this.refreshCustomIconOverrideRecord(record);
+            const defaultOverride = this.getCustomIconDefaultRawOverride(rawOverride);
+
+            if (defaultOverride) {
+                const defaultRecord = this.createCustomIconLeafRecord(normalizedRule, defaultOverride, "default", null);
+                this.copyCustomIconLeafRecordFields(record, defaultRecord);
+                record.hasDefaultOverride = true;
+                record.defaultOverride = record;
+            }
+
+            if (this.isPlainSettingsObject(rawOverride) && Object.prototype.hasOwnProperty.call(rawOverride, "states")) {
+                if (!this.isPlainSettingsObject(rawOverride.states)) {
+                    record.error = "State overrides must be an object";
+                } else {
+                    for (let stateRule in rawOverride.states) {
+                        if (!Object.prototype.hasOwnProperty.call(rawOverride.states, stateRule)) {
+                            continue;
+                        }
+
+                        const normalizedStateRule = this.normalizeCustomIconRule(stateRule);
+                        const stateRecord = this.createCustomIconLeafRecord(
+                            normalizedRule,
+                            rawOverride.states[stateRule],
+                            "state",
+                            normalizedStateRule
+                        );
+
+                        if (!normalizedStateRule) {
+                            stateRecord.error = "Invalid state rule";
+                        } else {
+                            record.stateOverrideMap[normalizedStateRule] = stateRecord;
+                        }
+
+                        record.stateOverrides.push(stateRecord);
+                    }
+                }
+            }
+
+            if (!record.hasDefaultOverride && record.stateOverrides.length === 0 && !record.error) {
+                record.error = "Override value must include default or states";
+            }
 
             records.push(record);
             map[normalizedRule] = record;
@@ -1190,13 +1367,76 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             return null;
         }
 
-        const override = this.customIconOverrideMap[identity] || null;
+        return this.getEffectiveCustomIconOverride(this.customIconOverrideMap[identity] || null, iconProxy);
+    }
 
-        if (override) {
-            this.refreshCustomIconOverrideRecord(override);
+    getCustomIconStateRule(iconProxy) {
+        const fields = this.getStatusIconMatchFields(iconProxy);
+        const icon = String(fields.icon || "").trim();
+
+        if (icon &&
+            icon.length >= 3 &&
+            !/[\r\n]/.test(icon) &&
+            icon.indexOf("xapp-tmp-") === -1 &&
+            icon.indexOf("/tmp/") === -1 &&
+            icon.indexOf("/dev/shm/") === -1 &&
+            icon.indexOf("/run/user/") === -1) {
+            return this.normalizeCustomIconRule(`icon:${icon}`);
         }
 
-        return override;
+        const tooltip = String(fields.tooltip || "")
+            .replace(/[\r\n]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        if (tooltip && tooltip.length >= 3 && !/^\d+$/.test(tooltip)) {
+            return this.normalizeCustomIconRule(`tooltip:${tooltip}`);
+        }
+
+        const label = String(fields.label || "")
+            .replace(/[\r\n]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        if (label && label.length >= 3) {
+            return this.normalizeCustomIconRule(`label:${label}`);
+        }
+
+        return null;
+    }
+
+    getEffectiveCustomIconOverride(identityRecord, iconProxy) {
+        if (!identityRecord) {
+            return null;
+        }
+
+        const stateRule = this.getCustomIconStateRule(iconProxy);
+
+        if (stateRule && identityRecord.stateOverrideMap && identityRecord.stateOverrideMap[stateRule]) {
+            const stateOverride = identityRecord.stateOverrideMap[stateRule];
+            this.refreshCustomIconOverrideRecord(stateOverride);
+            return stateOverride;
+        }
+
+        if (identityRecord.hasDefaultOverride) {
+            this.refreshCustomIconOverrideRecord(identityRecord);
+            return identityRecord;
+        }
+
+        return null;
+    }
+
+    getCustomIconStateOverride(identity, stateRule) {
+        const identityRecord = identity ? this.customIconOverrideMap[identity] : null;
+        const stateOverride = identityRecord && stateRule && identityRecord.stateOverrideMap
+            ? (identityRecord.stateOverrideMap[stateRule] || null)
+            : null;
+
+        if (stateOverride) {
+            this.refreshCustomIconOverrideRecord(stateOverride);
+        }
+
+        return stateOverride;
     }
 
     getIconRenderType(iconName) {
@@ -1212,16 +1452,28 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     getIconRenderRequest(iconProxy, originalIconName) {
         const identity = this.getCustomIconIdentityRule(iconProxy);
         const override = identity ? this.getCustomIconOverride(iconProxy) : null;
+        const currentStateRule = this.getCustomIconStateRule(iconProxy);
+        const stateOverride = identity && currentStateRule
+            ? this.getCustomIconStateOverride(identity, currentStateRule)
+            : null;
         const originalValue = originalIconName || "";
+        const overrideScope = override ? (override.scope || "default") : null;
+        const matchedStateRule = override && override.scope === "state" ? override.stateRule : null;
 
         if (override && override.valid) {
+            const sourcePrefix = overrideScope === "state" ? "custom-state" : "custom";
+
             return {
-                source: override.type === "file" ? "custom-file" : "custom-theme",
+                source: override.type === "file" ? `${sourcePrefix}-file` : `${sourcePrefix}-theme`,
                 type: override.type,
                 value: override.value,
                 fallbackValue: originalValue,
                 identity,
-                override
+                override,
+                overrideScope,
+                currentStateRule,
+                matchedStateRule,
+                stateOverride
             };
         }
 
@@ -1231,7 +1483,11 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             value: originalValue,
             fallbackValue: originalValue,
             identity,
-            override
+            override,
+            overrideScope,
+            currentStateRule,
+            matchedStateRule,
+            stateOverride
         };
     }
 
@@ -1264,10 +1520,130 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         }
 
         const nextOverrides = this.getCustomIconOverridesRawObject();
-        nextOverrides[normalizedRule] = {
+        const existingRaw = nextOverrides[normalizedRule];
+        const states = this.getCustomIconStatesRawObject(existingRaw);
+        const nextDefault = {
             type: validation.type,
             value: validation.value
         };
+        nextOverrides[normalizedRule] = this.buildCustomIconRawOverride(nextDefault, states);
+
+        this.customIconOverrides = nextOverrides;
+        this.onCustomIconOverridesChanged();
+
+        return true;
+    }
+
+    setCustomIconStateOverride(rule, stateRule, type, value) {
+        const normalizedRule = this.normalizeCustomIconRule(rule);
+        const normalizedStateRule = this.normalizeCustomIconRule(stateRule);
+
+        if (!normalizedRule || !normalizedStateRule) {
+            return false;
+        }
+
+        const validation = this.validateCustomIconOverride(type, value);
+
+        if (!validation.valid) {
+            return false;
+        }
+
+        const nextOverrides = this.getCustomIconOverridesRawObject();
+        const existingRaw = nextOverrides[normalizedRule];
+        const defaultOverride = this.getCustomIconDefaultRawOverride(existingRaw);
+        const states = this.getCustomIconStatesRawObject(existingRaw);
+        states[normalizedStateRule] = {
+            type: validation.type,
+            value: validation.value
+        };
+
+        nextOverrides[normalizedRule] = this.buildCustomIconRawOverride(defaultOverride, states);
+        this.customIconOverrides = nextOverrides;
+        this.onCustomIconOverridesChanged();
+
+        return true;
+    }
+
+    removeCustomIconDefaultOverride(rule) {
+        const normalizedRule = this.normalizeCustomIconRule(rule);
+
+        if (!normalizedRule) {
+            return false;
+        }
+
+        const raw = this.getCustomIconOverridesRawObject();
+        const nextOverrides = Object.create(null);
+        let removed = false;
+
+        for (let key in raw) {
+            if (!Object.prototype.hasOwnProperty.call(raw, key)) {
+                continue;
+            }
+
+            if (this.normalizeCustomIconRule(key) !== normalizedRule) {
+                nextOverrides[key] = raw[key];
+                continue;
+            }
+
+            const states = this.getCustomIconStatesRawObject(raw[key]);
+            const nextRaw = this.buildCustomIconRawOverride(null, states);
+            removed = removed || Boolean(this.getCustomIconDefaultRawOverride(raw[key]));
+
+            if (nextRaw) {
+                nextOverrides[key] = nextRaw;
+            }
+        }
+
+        if (!removed) {
+            return false;
+        }
+
+        this.customIconOverrides = nextOverrides;
+        this.onCustomIconOverridesChanged();
+
+        return true;
+    }
+
+    removeCustomIconStateOverride(rule, stateRule) {
+        const normalizedRule = this.normalizeCustomIconRule(rule);
+        const normalizedStateRule = this.normalizeCustomIconRule(stateRule);
+
+        if (!normalizedRule || !normalizedStateRule) {
+            return false;
+        }
+
+        const raw = this.getCustomIconOverridesRawObject();
+        const nextOverrides = Object.create(null);
+        let removed = false;
+
+        for (let key in raw) {
+            if (!Object.prototype.hasOwnProperty.call(raw, key)) {
+                continue;
+            }
+
+            if (this.normalizeCustomIconRule(key) !== normalizedRule) {
+                nextOverrides[key] = raw[key];
+                continue;
+            }
+
+            const defaultOverride = this.getCustomIconDefaultRawOverride(raw[key]);
+            const states = this.getCustomIconStatesRawObject(raw[key]);
+
+            if (Object.prototype.hasOwnProperty.call(states, normalizedStateRule)) {
+                delete states[normalizedStateRule];
+                removed = true;
+            }
+
+            const nextRaw = this.buildCustomIconRawOverride(defaultOverride, states);
+
+            if (nextRaw) {
+                nextOverrides[key] = nextRaw;
+            }
+        }
+
+        if (!removed) {
+            return false;
+        }
 
         this.customIconOverrides = nextOverrides;
         this.onCustomIconOverridesChanged();
@@ -1454,6 +1830,10 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 { label: "hidden-by-rule", value: hidden ? "true" : "false" },
                 { label: "effective-visible", value: effective ? "true" : "false" },
                 { label: "custom-icon-identity", value: customIconDiagnostics.identity },
+                { label: "custom-icon-scope", value: customIconDiagnostics.scope },
+                { label: "custom-icon-current-state", value: customIconDiagnostics.currentStateRule },
+                { label: "custom-icon-matched-state", value: customIconDiagnostics.matchedStateRule },
+                { label: "custom-icon-state-override", value: customIconDiagnostics.stateOverride },
                 { label: "custom-icon-override", value: customIconDiagnostics.override },
                 { label: "custom-icon-valid", value: customIconDiagnostics.valid },
                 { label: "custom-icon-error", value: customIconDiagnostics.error },
@@ -1776,8 +2156,10 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
     getCustomIconDiagnostics(icon) {
         const override = icon.customIconOverride;
+        const stateOverride = icon.customIconStateOverride;
         let overrideText = "none";
         let validText = "unavailable";
+        let stateOverrideText = "none";
 
         if (override) {
             const type = override.type || String(override.rawType || "").trim() || "invalid";
@@ -1786,8 +2168,18 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             validText = icon.customIconValid ? "true" : "false";
         }
 
+        if (stateOverride) {
+            const type = stateOverride.type || String(stateOverride.rawType || "").trim() || "invalid";
+            const value = stateOverride.value || String(stateOverride.rawValue || "").trim();
+            stateOverrideText = value ? `${type}:${value}` : type;
+        }
+
         return {
             identity: icon.customIconIdentity || "unavailable",
+            scope: icon.customIconOverrideScope || "unavailable",
+            currentStateRule: icon.customIconCurrentStateRule || "unavailable",
+            matchedStateRule: icon.customIconMatchedStateRule || "unavailable",
+            stateOverride: stateOverrideText,
             override: overrideText,
             valid: validText,
             error: icon.customIconError || "none",
@@ -1812,6 +2204,10 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         lines.push(`effective-visible: ${effective ? "true" : "false"}`);
         lines.push(`recommended-rule: ${recommendedRule || "unavailable"}`);
         lines.push(`custom-icon-identity: ${customIconDiagnostics.identity}`);
+        lines.push(`custom-icon-scope: ${customIconDiagnostics.scope}`);
+        lines.push(`custom-icon-current-state: ${customIconDiagnostics.currentStateRule}`);
+        lines.push(`custom-icon-matched-state: ${customIconDiagnostics.matchedStateRule}`);
+        lines.push(`custom-icon-state-override: ${customIconDiagnostics.stateOverride}`);
         lines.push(`custom-icon-override: ${customIconDiagnostics.override}`);
         lines.push(`custom-icon-valid: ${customIconDiagnostics.valid}`);
         lines.push(`custom-icon-error: ${customIconDiagnostics.error}`);
@@ -1859,6 +2255,16 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         const orderRule = this.getStableIconRule(icon.proxy);
         const hideRule = this.getRecommendedRule(icon.proxy);
         const customIconIdentity = this.getCustomIconIdentityRule(icon.proxy);
+        const customIconIdentityRecord = customIconIdentity
+            ? (this.customIconOverrideMap[customIconIdentity] || null)
+            : null;
+        const customIconStateRule = this.getCustomIconStateRule(icon.proxy);
+        const customIconStateOverride = customIconIdentity
+            ? this.getCustomIconStateOverride(customIconIdentity, customIconStateRule)
+            : null;
+        const customIconDefaultOverride = customIconIdentityRecord && customIconIdentityRecord.hasDefaultOverride
+            ? customIconIdentityRecord
+            : null;
         const orderMatch = this.getIconOrderMatch(icon);
         const hiddenByAnyRule = this.isStatusIconHidden(icon.proxy);
         const exactRulePresent = Boolean(hideRule) && this.isHiddenIconRuleAdded(hideRule);
@@ -1878,6 +2284,12 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             displayTitle: this.generateIconTitle(fields),
             customIconIdentity,
             customIconOverride: icon.customIconOverride,
+            customIconOverrideScope: icon.customIconOverrideScope,
+            customIconDefaultOverride,
+            customIconStateRule,
+            customIconStateRuleError: null,
+            customIconStateOverride,
+            customIconStateOverrideCount: customIconIdentityRecord ? customIconIdentityRecord.stateOverrides.length : 0,
             customIconValid: icon.customIconValid,
             customIconError: icon.customIconError,
             displayIconSource: icon.displayIconSource,
@@ -1926,15 +2338,44 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             const customIconIdentityError = matchedEntries.length > 0 && matchedCustomIdentities.length !== 1
                 ? "Multiple custom icon identities"
                 : null;
-            const customIconOverride = customIconIdentity
+            const customIconIdentityRecord = customIconIdentity
                 ? (this.customIconOverrideMap[customIconIdentity] || null)
                 : null;
+            const customIconDefaultOverride = customIconIdentityRecord && customIconIdentityRecord.hasDefaultOverride
+                ? customIconIdentityRecord
+                : null;
+            const matchedStateRules = [];
+            const seenStateRules = Object.create(null);
 
-            if (customIconOverride) {
-                this.refreshCustomIconOverrideRecord(customIconOverride);
+            for (let entry of matchedEntries) {
+                if (entry.customIconIdentity !== customIconIdentity || !entry.customIconStateRule) {
+                    continue;
+                }
+
+                if (!seenStateRules[entry.customIconStateRule]) {
+                    seenStateRules[entry.customIconStateRule] = true;
+                    matchedStateRules.push(entry.customIconStateRule);
+                }
             }
 
+            const customIconStateRule = matchedEntries.length > 0 && matchedStateRules.length === 1
+                ? matchedStateRules[0]
+                : null;
+            const customIconStateRuleError = matchedEntries.length > 0 && customIconIdentity && matchedStateRules.length !== 1
+                ? "Multiple current icon states"
+                : null;
+            const customIconStateOverride = customIconIdentity
+                ? this.getCustomIconStateOverride(customIconIdentity, customIconStateRule)
+                : null;
             const customIconEntry = matchedEntries.filter(entry => entry.customIconIdentity === customIconIdentity)[0] || null;
+            const customIconOverride = customIconEntry
+                ? customIconEntry.customIconOverride
+                : customIconDefaultOverride;
+
+            if (customIconDefaultOverride) {
+                this.refreshCustomIconOverrideRecord(customIconDefaultOverride);
+            }
+
             const customIconValid = customIconEntry && customIconEntry.customIconOverride
                 ? customIconEntry.customIconValid
                 : (customIconOverride ? Boolean(customIconOverride.valid) : null);
@@ -1964,6 +2405,12 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 customIconIdentity,
                 customIconIdentityError,
                 customIconOverride,
+                customIconOverrideScope: customIconEntry ? customIconEntry.customIconOverrideScope : (customIconOverride ? customIconOverride.scope : null),
+                customIconDefaultOverride,
+                customIconStateRule,
+                customIconStateRuleError,
+                customIconStateOverride,
+                customIconStateOverrideCount: customIconIdentityRecord ? customIconIdentityRecord.stateOverrides.length : 0,
                 customIconValid,
                 customIconError,
                 displayIconSource,
@@ -2040,6 +2487,9 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 : "Custom icon: No stable identity";
         }
 
+        const effectiveScope = entry.customIconOverrideScope || (entry.customIconOverride ? entry.customIconOverride.scope : null);
+        const label = effectiveScope === "state" ? "Custom icon: state" : "Custom icon: default";
+
         if (!entry.customIconOverride) {
             return "Custom icon: none";
         }
@@ -2050,11 +2500,43 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         const summary = this.getCustomIconOverrideSummary(entry.customIconOverride);
 
         if (valid) {
-            return `Custom icon: ${summary}`;
+            return `${label} ${summary}`;
         }
 
         const error = entry.customIconError || entry.customIconOverride.error || "Unknown error";
-        return `Custom icon: invalid ${summary} (${error})`;
+        return `${label} invalid ${summary} (${error})`;
+    }
+
+    getTrayIconManagerStateIconStatus(entry) {
+        if (!entry.customIconIdentity) {
+            return null;
+        }
+
+        if (!entry.customIconStateRule) {
+            return entry.customIconStateRuleError
+                ? `State icon: ${entry.customIconStateRuleError}`
+                : "State icon: unavailable";
+        }
+
+        if (!entry.customIconStateOverride) {
+            return `State icon: none for ${entry.customIconStateRule}`;
+        }
+
+        const summary = this.getCustomIconOverrideSummary(entry.customIconStateOverride);
+        const stateIsEffective = entry.customIconOverrideScope === "state" &&
+            entry.customIconOverride === entry.customIconStateOverride;
+        const valid = stateIsEffective && entry.customIconValid !== null && entry.customIconValid !== undefined
+            ? Boolean(entry.customIconValid)
+            : Boolean(entry.customIconStateOverride.valid);
+        const error = stateIsEffective && entry.customIconError
+            ? entry.customIconError
+            : (entry.customIconStateOverride.error || "Unknown error");
+
+        if (valid) {
+            return `State icon: ${summary} for ${entry.customIconStateRule}`;
+        }
+
+        return `State icon: invalid ${summary} (${error})`;
     }
 
     collectTrayIconManagerCustomIdentities(groups) {
@@ -2091,12 +2573,19 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         return inactiveRecords;
     }
 
-    getCustomIconEditorStateFromEntry(entry, returnMode) {
+    getCustomIconEditorStateFromEntry(entry, returnMode, scope="default") {
         if (!entry || !entry.customIconIdentity) {
             return null;
         }
 
-        const record = entry.customIconOverride || this.customIconOverrideMap[entry.customIconIdentity] || null;
+        const stateScope = scope === "state";
+        const record = stateScope
+            ? entry.customIconStateOverride
+            : entry.customIconDefaultOverride;
+
+        if (stateScope && !entry.customIconStateRule) {
+            return null;
+        }
 
         if (record) {
             this.refreshCustomIconOverrideRecord(record);
@@ -2113,6 +2602,9 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         return {
             identity: entry.customIconIdentity,
+            scope: stateScope ? "state" : "default",
+            stateRule: stateScope ? entry.customIconStateRule : null,
+            hasExistingOverride: Boolean(record),
             title: entry.displayTitle || entry.customIconIdentity,
             affectedCount: Number(entry.customIconAffectedCount) || 0,
             returnMode,
@@ -2135,6 +2627,9 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         return {
             identity: record.normalizedRule,
+            scope: "default",
+            stateRule: null,
+            hasExistingOverride: Boolean(record.hasDefaultOverride),
             title: record.normalizedRule,
             affectedCount: 0,
             returnMode: "inactive",
@@ -2145,8 +2640,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         };
     }
 
-    openCustomIconEditorForEntry(entry, returnMode="list") {
-        const state = this.getCustomIconEditorStateFromEntry(entry, returnMode);
+    openCustomIconEditorForEntry(entry, returnMode="list", scope="default") {
+        const state = this.getCustomIconEditorStateFromEntry(entry, returnMode, scope);
 
         if (!state) {
             return;
@@ -2157,6 +2652,10 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         this._trayIconEditorState = state;
         this._trayIconManagerMode = "editor";
         this.rebuildTrayIconManagerDialog();
+    }
+
+    openCustomIconStateEditorForEntry(entry, returnMode="list") {
+        this.openCustomIconEditorForEntry(entry, returnMode, "state");
     }
 
     openCustomIconEditorForRecord(record) {
@@ -2178,7 +2677,22 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             return;
         }
 
-        if (this.removeCustomIconOverride(entry.customIconIdentity)) {
+        if (this.removeCustomIconDefaultOverride(entry.customIconIdentity)) {
+            this._trayIconManagerMode = returnMode;
+            this._trayIconEditorState = null;
+            this.rebuildTrayIconManagerDialog();
+        }
+    }
+
+    resetCustomIconStateOverrideFromEditor() {
+        const state = this._trayIconEditorState;
+
+        if (!state || state.scope !== "state" || !state.identity || !state.stateRule) {
+            return;
+        }
+
+        if (this.removeCustomIconStateOverride(state.identity, state.stateRule)) {
+            const returnMode = state.returnMode === "inactive" ? "inactive" : "list";
             this._trayIconManagerMode = returnMode;
             this._trayIconEditorState = null;
             this.rebuildTrayIconManagerDialog();
@@ -2471,6 +2985,10 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         }
 
         detailParts.push(this.getTrayIconManagerCustomIconStatus(entry));
+        const stateIconStatus = this.getTrayIconManagerStateIconStatus(entry);
+        if (stateIconStatus) {
+            detailParts.push(stateIconStatus);
+        }
 
         if (entry.customIconIdentity && entry.rowType === "managed") {
             const affectedCount = Number(entry.customIconAffectedCount) || 0;
@@ -2487,6 +3005,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         row.add_actor(this.createTrayIconManagerChangeIconButton(entry));
         row.add_actor(this.createTrayIconManagerResetIconButton(entry));
+        row.add_actor(this.createTrayIconManagerStateIconButton(entry));
 
         return row;
     }
@@ -2786,7 +3305,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     }
 
     createTrayIconManagerResetIconButton(entry) {
-        const disabled = !entry.customIconIdentity || !entry.customIconOverride;
+        const disabled = !entry.customIconIdentity || !entry.customIconDefaultOverride;
         const button = new St.Button({
             label: "Reset icon",
             reactive: true,
@@ -2806,6 +3325,32 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         const tooltip = new Tooltips.Tooltip(button, disabled
             ? "No custom icon override to reset"
             : `Reset custom icon for ${entry.customIconIdentity}`);
+        this._trayIconManagerTooltips.push(tooltip);
+
+        return button;
+    }
+
+    createTrayIconManagerStateIconButton(entry) {
+        const disabled = !entry.customIconIdentity || !entry.customIconStateRule;
+        const button = new St.Button({
+            label: "State icon...",
+            reactive: true,
+            can_focus: !disabled,
+            track_hover: true,
+            style_class: disabled
+                ? "fayoo-xapp-status-manager-button fayoo-xapp-status-manager-button-disabled"
+                : "fayoo-xapp-status-manager-button"
+        });
+
+        if (!disabled) {
+            button.connect("clicked", Lang.bind(this, () => {
+                this.openCustomIconStateEditorForEntry(entry, "list");
+            }));
+        }
+
+        const tooltip = new Tooltips.Tooltip(button, disabled
+            ? (entry.customIconStateRuleError || "No current icon state rule")
+            : `Change custom icon for current state ${entry.customIconStateRule}`);
         this._trayIconManagerTooltips.push(tooltip);
 
         return button;
@@ -2893,7 +3438,11 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             return;
         }
 
-        if (!this.setCustomIconOverride(state.identity, validation.type, validation.value)) {
+        const saved = state.scope === "state"
+            ? this.setCustomIconStateOverride(state.identity, state.stateRule, validation.type, validation.value)
+            : this.setCustomIconOverride(state.identity, validation.type, validation.value);
+
+        if (!saved) {
             if (state.statusLabel && !state.statusLabel.is_finalized()) {
                 state.statusLabel.add_style_class_name("fayoo-xapp-status-manager-editor-status-error");
                 state.statusLabel.set_text("Unable to save custom icon override");
@@ -2926,20 +3475,35 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             return;
         }
 
-        this.setTrayIconManagerDescription("Set a theme icon name or an absolute PNG/SVG file path. Invalid values are not saved.");
-        this._trayIconManagerDialog.setButtons([
+        const editingState = state.scope === "state";
+        this.setTrayIconManagerDescription(editingState
+            ? "Set a custom icon for the current icon state. State overrides match the original icon name exactly."
+            : "Set a default theme icon name or an absolute PNG/SVG file path. Invalid values are not saved.");
+        const buttons = [
             {
                 label: "Cancel",
                 action: () => this.cancelCustomIconEditor(),
                 key: Clutter.KEY_Escape
-            },
+            }
+        ];
+
+        if (editingState && state.hasExistingOverride) {
+            buttons.push({
+                label: "Reset State",
+                action: () => this.resetCustomIconStateOverrideFromEditor(),
+                destructive_action: true
+            });
+        }
+
+        buttons.push(
             {
                 label: "Apply",
                 action: () => this.applyCustomIconEditor(),
                 key: Clutter.KEY_Return,
                 default: true
             }
-        ]);
+        );
+        this._trayIconManagerDialog.setButtons(buttons);
 
         const editor = new St.BoxLayout({
             vertical: true,
@@ -2948,7 +3512,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         const title = new St.Label({
             style_class: "fayoo-xapp-status-manager-section-title",
-            text: `Change icon: ${state.title}`
+            text: editingState ? `Change state icon: ${state.title}` : `Change default icon: ${state.title}`
         });
         title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         editor.add_actor(title);
@@ -2959,6 +3523,15 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         });
         identity.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         editor.add_actor(identity);
+
+        if (editingState) {
+            const stateRule = new St.Label({
+                style_class: "fayoo-xapp-status-manager-row-detail",
+                text: `State: ${state.stateRule}`
+            });
+            stateRule.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+            editor.add_actor(stateRule);
+        }
 
         const affectedText = state.affectedCount === 1
             ? "Affects 1 active icon"
@@ -3091,13 +3664,15 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         const detailEntry = {
             customIconIdentity: record.normalizedRule,
-            customIconOverride: record,
-            customIconValid: record.valid,
-            customIconError: record.error
+            customIconOverride: record.hasDefaultOverride ? record : null,
+            customIconDefaultOverride: record.hasDefaultOverride ? record : null,
+            customIconValid: record.hasDefaultOverride ? record.valid : null,
+            customIconError: record.hasDefaultOverride ? record.error : null
         };
+        const stateCount = record.stateOverrides ? record.stateOverrides.length : 0;
         const detail = new St.Label({
             style_class: "fayoo-xapp-status-manager-row-detail",
-            text: `${this.getTrayIconManagerCustomIconStatus(detailEntry)} - Affects 0 active icons`
+            text: `${this.getTrayIconManagerCustomIconStatus(detailEntry)} - State overrides: ${stateCount} - Affects 0 active icons`
         });
         detail.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         textBox.add_actor(detail);

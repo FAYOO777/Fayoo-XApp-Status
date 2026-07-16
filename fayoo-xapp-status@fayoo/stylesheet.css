@@ -10,7 +10,7 @@
 }
 
 .fayoo-xapp-status-manager-dialog {
-    min-width: 780px;
+    min-width: 900px;
 }
 
 .fayoo-xapp-status-manager-title {
@@ -79,7 +79,7 @@
 }
 
 .fayoo-xapp-status-manager-button {
-    min-width: 96px;
+    min-width: 88px;
     padding: 4px 8px;
 }
 

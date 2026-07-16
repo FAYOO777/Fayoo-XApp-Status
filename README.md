@@ -92,20 +92,24 @@ The Tray Icon Manager can also set a custom display icon per stable tray icon id
 
 - Click `Change icon...` to choose a theme icon name or an absolute local PNG/SVG file path.
 - Click `Reset icon` to remove the custom icon override and return to the application's original icon.
+- Click `State icon...` to set an override for the current detected icon state only.
+- State icon overrides use stable original `icon:` values when available, then fall back to a single-line `tooltip:` or `label:` state rule when the icon path is temporary.
+- State icon overrides match the generated state rule exactly and take priority over the default override.
+- `Reset State` is available from the state icon editor when the current state already has an override.
 - Invalid custom icon values are not saved from the editor.
 - If an existing saved override becomes invalid, the applet falls back to the original application icon.
 - Inactive overrides can be reviewed from `Inactive overrides` when their matching tray icon is not currently active.
 - Custom icon identities prefer stable exact rules such as `name:blueman`, then fall back to the recommended safe rule.
 - Custom icon overrides do not modify the application's original `icon_name`; they only change this applet's rendered icon.
 - Browse dialogs, search, undo, and bulk actions are not included in this release.
-- Custom icon overrides are currently single default overrides per identity. State-aware overrides for multi-state applications are planned separately.
+- State-aware overrides currently use one exact generated state rule per override; fuzzy state matching is not exposed in the editor.
 
 A diagnostic menu is available to inspect all current XApp tray icon details. Right-click the applet and select `Tray Icon Info`.
 
 - Lists every XApp tray icon in real time, including hidden ones.
 - Shows `name`, `icon`, `tooltip`, `label`.
 - Shows application-visible, hidden-by-rule, and effective-visible states.
-- Shows custom icon identity, override, validity, error, and rendered source diagnostics.
+- Shows custom icon identity, scope, current state rule, matched state rule, override, validity, error, and rendered source diagnostics.
 - Supports copying the recommended hide rule per-icon.
 - Supports copying per-icon diagnostic text.
 - Supports copying a full diagnostics report for all icons.
