@@ -327,7 +327,7 @@ class XAppStatusIcon {
                 (cache, handle, actor, data) => this._onImageLoaded(cache, handle, actor, data, generation, request)
             );
         } catch (e) {
-            this.handleIconLoadFailure(request, generation, "Unable to load image file");
+            this.handleIconLoadFailure(request, generation, "无法加载图标文件");
         }
     }
 
@@ -341,7 +341,7 @@ class XAppStatusIcon {
         }
 
         if (!actor || actor.is_finalized()) {
-            this.handleIconLoadFailure(request, generation, "Unable to load image file");
+            this.handleIconLoadFailure(request, generation, "无法加载图标文件");
             return;
         }
 
@@ -531,6 +531,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         super(orientation, panel_height, instance_id);
 
         this.orientation = orientation;
+        this._uuid = metadata.uuid;
 
         this.setAllowedLayout(Applet.AllowedLayout.BOTH);
 
@@ -959,21 +960,134 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         return normalizedHideRule || null;
     }
 
+    getCustomIconStorageDir() {
+        return GLib.build_filenamev([
+            GLib.get_user_config_dir(),
+            "cinnamon",
+            "spices",
+            this._uuid || "fayoo-xapp-status@fayoo",
+            "custom-icons"
+        ]);
+    }
+
+    ensureCustomIconStorageDir() {
+        const dir = Gio.File.new_for_path(this.getCustomIconStorageDir());
+
+        try {
+            if (!dir.query_exists(null)) {
+                dir.make_directory_with_parents(null);
+            }
+        } catch (e) {
+            return {
+                valid: false,
+                error: `无法创建专用图标目录: ${e.message || e}`
+            };
+        }
+
+        return { valid: true, path: dir.get_path() };
+    }
+
+    isStoredCustomIconPath(path) {
+        const storageDir = this.getCustomIconStorageDir();
+        const normalizedPath = String(path || "").trim();
+
+        return normalizedPath.indexOf(storageDir + "/") === 0;
+    }
+
+    getCustomIconStorageHash(value) {
+        const text = String(value || "");
+        let hash = 5381;
+
+        for (let i = 0; i < text.length; i++) {
+            hash = ((hash << 5) + hash + text.charCodeAt(i)) >>> 0;
+        }
+
+        return hash.toString(16);
+    }
+
+    sanitizeCustomIconStorageName(value) {
+        const text = String(value || "")
+            .toLowerCase()
+            .replace(/[^a-z0-9._-]+/g, "-")
+            .replace(/^-+|-+$/g, "");
+
+        return (text || "icon").slice(0, 48);
+    }
+
+    getCustomIconStorageExtension(path) {
+        const lowerPath = String(path || "").toLowerCase();
+
+        return lowerPath.endsWith(".svg") ? ".svg" : ".png";
+    }
+
+    getCustomIconStoredPath(sourcePath, identity, stateRule, scope) {
+        const scopeName = scope === "state" ? "state" : "default";
+        const identityPart = this.sanitizeCustomIconStorageName(identity);
+        const hash = this.getCustomIconStorageHash(`${identity}\n${stateRule || ""}\n${sourcePath}`);
+        const extension = this.getCustomIconStorageExtension(sourcePath);
+        const fileName = `${identityPart}-${scopeName}-${hash}${extension}`;
+
+        return GLib.build_filenamev([this.getCustomIconStorageDir(), fileName]);
+    }
+
+    prepareCustomIconFileForSave(validation, identity, stateRule, scope) {
+        if (!validation || validation.type !== "file" || !validation.valid) {
+            return validation;
+        }
+
+        const sourcePath = validation.value;
+
+        if (this.isStoredCustomIconPath(sourcePath)) {
+            return validation;
+        }
+
+        const dirResult = this.ensureCustomIconStorageDir();
+
+        if (!dirResult.valid) {
+            return {
+                type: "file",
+                value: sourcePath,
+                valid: false,
+                error: dirResult.error
+            };
+        }
+
+        const destPath = this.getCustomIconStoredPath(sourcePath, identity, stateRule, scope);
+
+        try {
+            Gio.File.new_for_path(sourcePath).copy(
+                Gio.File.new_for_path(destPath),
+                Gio.FileCopyFlags.OVERWRITE,
+                null,
+                null
+            );
+        } catch (e) {
+            return {
+                type: "file",
+                value: sourcePath,
+                valid: false,
+                error: `无法复制图标到专用目录: ${e.message || e}`
+            };
+        }
+
+        return this.validateCustomIconFile(destPath);
+    }
+
     normalizeCustomIconFilePath(value) {
         const rawPath = String(value || "").trim();
 
         if (!rawPath) {
-            return { path: "", error: "Empty file path" };
+            return { path: "", error: "文件路径为空" };
         }
 
         if (/[\r\n]/.test(rawPath)) {
-            return { path: rawPath, error: "File path must be a single line" };
+            return { path: rawPath, error: "文件路径必须是单行" };
         }
 
         let path = rawPath;
 
         if (path === "~") {
-            return { path, error: "File path must be absolute" };
+            return { path, error: "文件路径必须是绝对路径" };
         }
 
         if (path.indexOf("~/") === 0) {
@@ -981,7 +1095,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         }
 
         if (!GLib.path_is_absolute(path)) {
-            return { path, error: "File path must be absolute" };
+            return { path, error: "文件路径必须是绝对路径" };
         }
 
         return { path, error: null };
@@ -1007,7 +1121,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 type: "file",
                 value: path,
                 valid: false,
-                error: "File does not exist"
+                error: "文件不存在"
             };
         }
 
@@ -1019,7 +1133,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 type: "file",
                 value: path,
                 valid: false,
-                error: "Path is not a regular file"
+                error: "路径不是普通文件"
             };
         }
 
@@ -1028,7 +1142,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 type: "file",
                 value: path,
                 valid: false,
-                error: "Path is not a regular file"
+                error: "路径不是普通文件"
             };
         }
 
@@ -1039,7 +1153,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 type: "file",
                 value: path,
                 valid: false,
-                error: "Unsupported file type"
+                error: "不支持的文件类型"
             };
         }
 
@@ -1074,7 +1188,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 type: normalizedType,
                 value: stringValue,
                 valid: false,
-                error: "Unsupported override type"
+                error: "不支持的覆盖类型"
             };
         }
 
@@ -1083,7 +1197,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 type: normalizedType,
                 value: stringValue,
                 valid: false,
-                error: normalizedType === "file" ? "Empty file path" : "Empty theme icon name"
+                error: normalizedType === "file" ? "文件路径为空" : "主题图标名称为空"
             };
         }
 
@@ -1092,7 +1206,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 type: normalizedType,
                 value: stringValue,
                 valid: false,
-                error: normalizedType === "file" ? "File path must be a single line" : "Theme icon name must be a single line"
+                error: normalizedType === "file" ? "文件路径必须是单行" : "主题图标名称必须是单行"
             };
         }
 
@@ -1105,7 +1219,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 type: "theme",
                 value: stringValue,
                 valid: false,
-                error: "Theme icon not found"
+                error: "找不到主题图标"
             };
         }
 
@@ -1213,7 +1327,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         };
 
         if (!this.isPlainSettingsObject(rawOverride)) {
-            record.error = "Override value must be an object";
+            record.error = "图标覆盖值必须是对象";
             return record;
         }
 
@@ -1284,13 +1398,13 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             };
 
             if (!normalizedRule) {
-                record.error = "Invalid identity rule";
+                record.error = "无效的图标身份规则";
                 records.push(record);
                 continue;
             }
 
             if (!this.isPlainSettingsObject(rawOverride)) {
-                record.error = "Override value must be an object";
+                record.error = "图标覆盖值必须是对象";
                 records.push(record);
                 map[normalizedRule] = record;
                 continue;
@@ -1307,7 +1421,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
             if (this.isPlainSettingsObject(rawOverride) && Object.prototype.hasOwnProperty.call(rawOverride, "states")) {
                 if (!this.isPlainSettingsObject(rawOverride.states)) {
-                    record.error = "State overrides must be an object";
+                    record.error = "状态图标覆盖必须是对象";
                 } else {
                     for (let stateRule in rawOverride.states) {
                         if (!Object.prototype.hasOwnProperty.call(rawOverride.states, stateRule)) {
@@ -1323,7 +1437,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                         );
 
                         if (!normalizedStateRule) {
-                            stateRecord.error = "Invalid state rule";
+                            stateRecord.error = "无效的状态规则";
                         } else {
                             record.stateOverrideMap[normalizedStateRule] = stateRecord;
                         }
@@ -1334,7 +1448,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             }
 
             if (!record.hasDefaultOverride && record.stateOverrides.length === 0 && !record.error) {
-                record.error = "Override value must include default or states";
+                record.error = "图标覆盖必须包含 default 或 states";
             }
 
             records.push(record);
@@ -1415,7 +1529,10 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         if (stateRule && identityRecord.stateOverrideMap && identityRecord.stateOverrideMap[stateRule]) {
             const stateOverride = identityRecord.stateOverrideMap[stateRule];
             this.refreshCustomIconOverrideRecord(stateOverride);
-            return stateOverride;
+
+            if (stateOverride.valid || !identityRecord.hasDefaultOverride) {
+                return stateOverride;
+            }
         }
 
         if (identityRecord.hasDefaultOverride) {
@@ -1738,16 +1855,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             return null;
         }
 
-        const fields = this.getStatusIconMatchFields(statusIcon.proxy);
-        const normalizedFields = {};
-
-        for (let field in fields) {
-            const value = String(fields[field] || "").trim();
-            normalizedFields[field] = /[\r\n]/.test(value) ? null : value.toLowerCase();
-        }
-
         for (let rule of this.effectiveIconOrderRules) {
-            if (normalizedFields[rule.field] && normalizedFields[rule.field] === rule.value) {
+            if (this.statusIconMatchesOrderRule(statusIcon, rule)) {
                 return rule;
             }
         }
@@ -1762,7 +1871,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     }
 
     buildTrayInfoMenuItem() {
-        this._trayInfoItem = new PopupMenu.PopupSubMenuMenuItem("Tray Icon Info");
+        this._trayInfoItem = new PopupMenu.PopupSubMenuMenuItem("托盘图标信息");
 
         this._trayInfoConnectId = this._trayInfoItem.menu.connect(
             "open-state-changed",
@@ -1777,7 +1886,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     }
 
     buildTrayManagerMenuItem() {
-        this._trayManagerItem = new PopupMenu.PopupMenuItem("Manage Tray Icons...");
+        this._trayManagerItem = new PopupMenu.PopupMenuItem("管理托盘图标...");
         this._trayManagerActivateId = this._trayManagerItem.connect(
             "activate",
             Lang.bind(this, () => this.openTrayIconManager())
@@ -1798,14 +1907,14 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         iconEntries.sort(this._sortFunc);
 
         if (iconEntries.length === 0) {
-            const emptyItem = new PopupMenu.PopupMenuItem("No tray icons", {
+            const emptyItem = new PopupMenu.PopupMenuItem("没有托盘图标", {
                 reactive: false
             });
             this._trayInfoItem.menu.addMenuItem(emptyItem);
             return;
         }
 
-        const copyAllItem = new PopupMenu.PopupMenuItem("Copy All Diagnostics");
+        const copyAllItem = new PopupMenu.PopupMenuItem("复制全部诊断信息");
         copyAllItem.connect("activate", Lang.bind(this, () => {
             this.copyTextToClipboard(this.formatAllDiagnostics(iconEntries));
         }));
@@ -1853,8 +1962,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
             const ruleText = recommendedRule || "unavailable";
             const ruleDisplay = recommendedRule
-                ? `Recommended rule: ${ruleText}`
-                : "Recommended rule: unavailable";
+                ? `推荐规则: ${ruleText}`
+                : "推荐规则: 不可用";
             const ruleItem = new PopupMenu.PopupMenuItem(ruleDisplay, {
                 reactive: false
             });
@@ -1863,13 +1972,13 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
             if (recommendedRule) {
                 if (this.isHiddenIconRuleAdded(recommendedRule)) {
-                    const removeItem = new PopupMenu.PopupMenuItem("Remove Exact Hide Rule");
+                    const removeItem = new PopupMenu.PopupMenuItem("移除精确隐藏规则");
                     removeItem.connect("activate", Lang.bind(this, () => {
                         this.removeHiddenIconRule(recommendedRule);
                     }));
                     subMenu.menu.addMenuItem(removeItem);
                 } else {
-                    const addRuleItem = new PopupMenu.PopupMenuItem("Add Recommended Hide Rule");
+                    const addRuleItem = new PopupMenu.PopupMenuItem("添加推荐隐藏规则");
                     addRuleItem.connect("activate", Lang.bind(this, () => {
                         this.addHiddenIconRule(recommendedRule);
                     }));
@@ -1878,20 +1987,20 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             }
 
             if (recommendedRule) {
-                const copyRuleItem = new PopupMenu.PopupMenuItem("Copy Recommended Rule");
+                const copyRuleItem = new PopupMenu.PopupMenuItem("复制推荐规则");
                 copyRuleItem.connect("activate", Lang.bind(this, () => {
                     this.copyTextToClipboard(recommendedRule);
                 }));
                 subMenu.menu.addMenuItem(copyRuleItem);
             }
             else {
-                const copyRuleItem = new PopupMenu.PopupMenuItem("Copy Recommended Rule", {
+                const copyRuleItem = new PopupMenu.PopupMenuItem("复制推荐规则", {
                     reactive: false
                 });
                 subMenu.menu.addMenuItem(copyRuleItem);
             }
 
-            const copyDiagItem = new PopupMenu.PopupMenuItem("Copy Icon Diagnostics");
+            const copyDiagItem = new PopupMenu.PopupMenuItem("复制图标诊断信息");
             copyDiagItem.connect("activate", Lang.bind(this, () => {
                 this.copyTextToClipboard(this.formatIconDiagnostics(icon));
             }));
@@ -1921,7 +2030,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             return cleanLabel;
         }
 
-        return "Unnamed tray icon";
+        return "未命名托盘图标";
     }
 
     getRecommendedRule(iconProxy) {
@@ -2218,7 +2327,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
     formatAllDiagnostics(iconEntries) {
         const lines = [];
-        lines.push("Fayoo XApp Status Applet - Tray Icon Diagnostics\n");
+        lines.push("Fayoo XApp Status Applet - 托盘图标诊断信息\n");
 
         let index = 1;
         for (let entry of iconEntries) {
@@ -2243,17 +2352,25 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         const fields = this.getStatusIconMatchFields(statusIcon.proxy);
         const value = String(fields[rule.field] || "").trim();
 
-        if (!value || /[\r\n]/.test(value)) {
-            return false;
+        if (value && !/[\r\n]/.test(value) && value.toLowerCase() === rule.value) {
+            return true;
         }
 
-        return value.toLowerCase() === rule.value;
+        if (rule.source === "managed") {
+            const recommendedRule = this.normalizeIconOrderRuleLine(this.getRecommendedRule(statusIcon.proxy));
+            const normalizedRule = rule.normalizedRule || rule.rule || `${rule.field}:${rule.value}`;
+
+            return Boolean(recommendedRule && recommendedRule === normalizedRule);
+        }
+
+        return false;
     }
 
     getActiveTrayIconManagerEntry(key, icon) {
         const fields = this.getStatusIconMatchFields(icon.proxy);
-        const orderRule = this.getStableIconRule(icon.proxy);
+        const stableOrderRule = this.getStableIconRule(icon.proxy);
         const hideRule = this.getRecommendedRule(icon.proxy);
+        const orderRule = stableOrderRule || hideRule;
         const customIconIdentity = this.getCustomIconIdentityRule(icon.proxy);
         const customIconIdentityRecord = customIconIdentity
             ? (this.customIconOverrideMap[customIconIdentity] || null)
@@ -2336,7 +2453,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 ? rule.normalizedRule
                 : (matchedCustomIdentities.length === 1 ? matchedCustomIdentities[0] : null);
             const customIconIdentityError = matchedEntries.length > 0 && matchedCustomIdentities.length !== 1
-                ? "Multiple custom icon identities"
+                ? "存在多个自定义图标身份"
                 : null;
             const customIconIdentityRecord = customIconIdentity
                 ? (this.customIconOverrideMap[customIconIdentity] || null)
@@ -2362,7 +2479,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 ? matchedStateRules[0]
                 : null;
             const customIconStateRuleError = matchedEntries.length > 0 && customIconIdentity && matchedStateRules.length !== 1
-                ? "Multiple current icon states"
+                ? "存在多个当前图标状态"
                 : null;
             const customIconStateOverride = customIconIdentity
                 ? this.getCustomIconStateOverride(customIconIdentity, customIconStateRule)
@@ -2483,15 +2600,15 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     getTrayIconManagerCustomIconStatus(entry) {
         if (!entry.customIconIdentity) {
             return entry.customIconIdentityError
-                ? `Custom icon: ${entry.customIconIdentityError}`
-                : "Custom icon: No stable identity";
+                ? `自定义图标: ${entry.customIconIdentityError}`
+                : "自定义图标: 没有稳定身份";
         }
 
         const effectiveScope = entry.customIconOverrideScope || (entry.customIconOverride ? entry.customIconOverride.scope : null);
-        const label = effectiveScope === "state" ? "Custom icon: state" : "Custom icon: default";
+        const label = effectiveScope === "state" ? "自定义图标: 状态" : "自定义图标: 默认";
 
         if (!entry.customIconOverride) {
-            return "Custom icon: none";
+            return "自定义图标: 无";
         }
 
         const valid = entry.customIconValid !== null && entry.customIconValid !== undefined
@@ -2503,8 +2620,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             return `${label} ${summary}`;
         }
 
-        const error = entry.customIconError || entry.customIconOverride.error || "Unknown error";
-        return `${label} invalid ${summary} (${error})`;
+        const error = entry.customIconError || entry.customIconOverride.error || "未知错误";
+        return `${label} 无效 ${summary} (${error})`;
     }
 
     getTrayIconManagerStateIconStatus(entry) {
@@ -2514,12 +2631,12 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         if (!entry.customIconStateRule) {
             return entry.customIconStateRuleError
-                ? `State icon: ${entry.customIconStateRuleError}`
-                : "State icon: unavailable";
+                ? `状态图标: ${entry.customIconStateRuleError}`
+                : "状态图标: 不可用";
         }
 
         if (!entry.customIconStateOverride) {
-            return `State icon: none for ${entry.customIconStateRule}`;
+            return `状态图标: 无，状态 ${entry.customIconStateRule}`;
         }
 
         const summary = this.getCustomIconOverrideSummary(entry.customIconStateOverride);
@@ -2530,13 +2647,112 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             : Boolean(entry.customIconStateOverride.valid);
         const error = stateIsEffective && entry.customIconError
             ? entry.customIconError
-            : (entry.customIconStateOverride.error || "Unknown error");
+            : (entry.customIconStateOverride.error || "未知错误");
 
         if (valid) {
-            return `State icon: ${summary} for ${entry.customIconStateRule}`;
+            return `状态图标: ${summary}，状态 ${entry.customIconStateRule}`;
         }
 
-        return `State icon: invalid ${summary} (${error})`;
+        return `状态图标: 无效 ${summary} (${error})`;
+    }
+
+    getTrayIconManagerDisplaySourceStatus(entry) {
+        if (!entry || entry.unavailable) {
+            return null;
+        }
+
+        switch (String(entry.displayIconSource || "")) {
+            case "custom-state-file":
+            case "custom-state-theme":
+                return "当前使用: 状态图标";
+            case "custom-file":
+            case "custom-theme":
+                return "当前使用: 默认自定义图标";
+            case "fallback-original":
+                return "当前使用: 原始图标（自定义图标无效）";
+            case "original":
+                return "当前使用: 原始图标";
+        }
+
+        return null;
+    }
+
+    getTrayIconManagerPreviewInfo(entry) {
+        if (!entry) {
+            return { type: "theme", value: "image-missing" };
+        }
+
+        const source = String(entry.displayIconSource || "");
+        const overrideIsCurrent = source === "custom-state-file" ||
+            source === "custom-state-theme" ||
+            source === "custom-file" ||
+            source === "custom-theme";
+
+        if (overrideIsCurrent && entry.customIconOverride) {
+            const type = this.getCustomIconOverrideType(entry.customIconOverride);
+            const value = this.getCustomIconOverrideValue(entry.customIconOverride);
+
+            if (value) {
+                return { type, value };
+            }
+        }
+
+        const originalValue = String(entry.displayIcon || "").trim();
+
+        if (originalValue) {
+            return {
+                type: this.getIconRenderType(originalValue),
+                value: originalValue
+            };
+        }
+
+        return { type: "theme", value: "image-missing" };
+    }
+
+    getTrayIconManagerStIconType(value) {
+        return String(value || "").toLowerCase().includes("symbolic")
+            ? St.IconType.SYMBOLIC
+            : St.IconType.FULLCOLOR;
+    }
+
+    createTrayIconManagerThemeIconActor(iconName, iconSize) {
+        return new St.Icon({
+            icon_name: iconName || "image-missing",
+            icon_type: this.getTrayIconManagerStIconType(iconName),
+            icon_size: iconSize
+        });
+    }
+
+    createTrayIconManagerIconPreview(entry, iconSize=22, styleClass="fayoo-xapp-status-manager-row-icon") {
+        const preview = this.getTrayIconManagerPreviewInfo(entry);
+        const bin = styleClass ? new St.Bin({ style_class: styleClass }) : new St.Bin();
+
+        bin.set_size(iconSize, iconSize);
+        bin.child = this.createTrayIconManagerThemeIconActor("image-missing", iconSize);
+
+        if (preview.type !== "file") {
+            bin.child = this.createTrayIconManagerThemeIconActor(preview.value, iconSize);
+            return bin;
+        }
+
+        try {
+            St.TextureCache.get_default().load_image_from_file_async(
+                preview.value,
+                iconSize,
+                iconSize,
+                (cache, handle, actor) => {
+                    if (!bin || bin.is_finalized() || !actor || actor.is_finalized()) {
+                        return;
+                    }
+
+                    bin.child = actor;
+                }
+            );
+        } catch (e) {
+            // Keep the placeholder icon if the preview file cannot be loaded.
+        }
+
+        return bin;
     }
 
     collectTrayIconManagerCustomIdentities(groups) {
@@ -2729,13 +2945,13 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         const title = new St.Label({
             style_class: "fayoo-xapp-status-manager-title",
-            text: "Tray Icon Manager"
+            text: "托盘图标管理器"
         });
         dialog.contentLayout.add_actor(title);
 
         const description = new St.Label({
             style_class: "fayoo-xapp-status-manager-description",
-            text: "Drag tray icons into managed order, hide or show active icons, and set custom tray icons."
+            text: "拖拽托盘图标来固定顺序，也可以隐藏/显示图标，并为图标设置默认或状态专用自定义图标。"
         });
         description.clutter_text.line_wrap = true;
         this._trayIconManagerDescription = description;
@@ -2755,7 +2971,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         dialog.setButtons([
             {
-                label: "Close",
+                label: "关闭",
                 action: () => dialog.close(global.get_current_time()),
                 key: Clutter.KEY_Escape
             }
@@ -2826,7 +3042,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         this._trayIconManagerDialog.setButtons([
             {
-                label: "Close",
+                label: "关闭",
                 action: () => this._trayIconManagerDialog.close(global.get_current_time()),
                 key: Clutter.KEY_Escape
             }
@@ -2834,13 +3050,13 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     }
 
     rebuildTrayIconManagerListDialog() {
-        this.setTrayIconManagerDescription("Drag tray icons into managed order, hide or show active icons, and set custom tray icons.");
+        this.setTrayIconManagerDescription("拖拽托盘图标来固定顺序，也可以隐藏/显示图标，并为图标设置默认或状态专用自定义图标。");
         this.setTrayIconManagerCloseButtons();
 
         const groups = this.getTrayIconManagerEntries();
         this.addTrayIconManagerToolbar(groups);
-        this.addTrayIconManagerSection("Managed order", groups.managedEntries, "No managed entries yet.", "managed");
-        this.addTrayIconManagerSection("Other active icons", groups.otherEntries, "No active tray icons.", "other");
+        this.addTrayIconManagerSection("固定顺序", groups.managedEntries, "还没有固定顺序的图标。", "managed");
+        this.addTrayIconManagerSection("其他活动图标", groups.otherEntries, "没有活动托盘图标。", "other");
     }
 
     addTrayIconManagerToolbar(groups) {
@@ -2853,13 +3069,13 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         const label = new St.Label({
             style_class: "fayoo-xapp-status-manager-row-detail",
             text: inactiveCount === 1
-                ? "1 inactive custom icon override"
-                : `${inactiveCount} inactive custom icon overrides`
+                ? "1 条未活动的自定义图标覆盖"
+                : `${inactiveCount} 条未活动的自定义图标覆盖`
         });
         toolbar.add_actor(label);
 
         const button = new St.Button({
-            label: "Inactive overrides",
+            label: "未活动覆盖",
             reactive: true,
             can_focus: inactiveCount > 0,
             track_hover: true,
@@ -2879,8 +3095,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         }
 
         const tooltip = new Tooltips.Tooltip(button, inactiveCount > 0
-            ? "Manage custom icon overrides that are not shown in the active list"
-            : "No inactive custom icon overrides");
+            ? "管理当前未显示在活动列表中的自定义图标覆盖"
+            : "没有未活动的自定义图标覆盖");
         this._trayIconManagerTooltips.push(tooltip);
         toolbar.add_actor(button);
 
@@ -2931,13 +3147,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         row.add_actor(this.createTrayIconManagerDragHandle(entry, row));
         row.add_actor(this.createTrayIconManagerEyeButton(entry));
 
-        const iconName = entry.displayIcon && entry.displayIcon.indexOf("/") === -1 ? entry.displayIcon : "image-missing";
-        row.add_actor(new St.Icon({
-            icon_name: iconName,
-            icon_type: St.IconType.FULLCOLOR,
-            icon_size: 22,
-            style_class: "fayoo-xapp-status-manager-row-icon"
-        }));
+        row.add_actor(this.createTrayIconManagerIconPreview(entry));
 
         const textBox = new St.BoxLayout({
             vertical: true,
@@ -2954,33 +3164,42 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         const detailParts = [];
         if (entry.unavailable) {
-            detailParts.push("Not currently active");
+            detailParts.push("当前未活动");
         } else if (entry.multipleMatches) {
-            detailParts.push(`${entry.matchedIcons.length} active icons`);
+            detailParts.push(`${entry.matchedIcons.length} 个活动图标`);
         } else {
-            detailParts.push(entry.effectiveVisible ? "Visible" : "Hidden");
             if (!entry.applicationVisible) {
-                detailParts.push("App disabled visibility");
+                detailParts.push("应用暂不显示");
+                detailParts.push("应用自身未请求显示");
+            } else {
+                detailParts.push(entry.effectiveVisible ? "显示中" : "已按规则隐藏");
             }
             if (entry.hiddenByOtherRule) {
-                detailParts.push("Hidden by another rule");
+                detailParts.push("被其他规则隐藏");
             }
             if (entry.advancedOrdered) {
-                detailParts.push("Ordered by advanced rule");
+                detailParts.push("由高级规则排序");
             }
+        }
+
+        const displaySourceStatus = this.getTrayIconManagerDisplaySourceStatus(entry);
+        if (displaySourceStatus) {
+            detailParts.push(displaySourceStatus);
         }
 
         if (entry.orderRule) {
-            detailParts.push(`Order rule: ${entry.orderRule}`);
+            detailParts.push(`排序规则: ${entry.orderRule}`);
         } else {
-            detailParts.push("Order rule: No stable order identifier");
+            detailParts.push("排序规则: 没有稳定排序标识");
         }
 
         if (!entry.unavailable) {
-            if (entry.hideRule) {
-                detailParts.push(`Hide rule: ${entry.hideRule}`);
+            if (entry.exactRulePresent) {
+                detailParts.push(`已添加隐藏规则: ${entry.hideRule}`);
+            } else if (entry.hideRule) {
+                detailParts.push(`推荐隐藏规则: ${entry.hideRule}`);
             } else {
-                detailParts.push("Hide rule: No safe hide rule");
+                detailParts.push("隐藏规则: 没有安全隐藏规则");
             }
         }
 
@@ -2992,7 +3211,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         if (entry.customIconIdentity && entry.rowType === "managed") {
             const affectedCount = Number(entry.customIconAffectedCount) || 0;
-            detailParts.push(affectedCount === 1 ? "Affects 1 active icon" : `Affects ${affectedCount} active icons`);
+            detailParts.push(affectedCount === 1 ? "影响 1 个活动图标" : `影响 ${affectedCount} 个活动图标`);
         }
 
         const detail = new St.Label({
@@ -3022,7 +3241,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 : "fayoo-xapp-status-manager-drag-handle fayoo-xapp-status-manager-drag-handle-disabled"
         });
 
-        const tooltipText = draggable ? "Drag to reorder" : "No stable order identifier";
+        const tooltipText = draggable ? "拖拽排序" : "没有稳定排序标识";
         const tooltip = new Tooltips.Tooltip(handle, tooltipText);
         this._trayIconManagerTooltips.push(tooltip);
 
@@ -3061,19 +3280,14 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             vertical: false,
             style_class: "fayoo-xapp-status-manager-drag-actor"
         });
-        const iconName = entry.displayIcon && entry.displayIcon.indexOf("/") === -1 ? entry.displayIcon : "image-missing";
-        actor.add_actor(new St.Icon({
-            icon_name: iconName,
-            icon_type: St.IconType.FULLCOLOR,
-            icon_size: 22
-        }));
+        actor.add_actor(this.createTrayIconManagerIconPreview(entry, 22, ""));
         const textBox = new St.BoxLayout({ vertical: true });
-        const title = new St.Label({ text: entry.displayTitle || "Tray icon" });
+        const title = new St.Label({ text: entry.displayTitle || "托盘图标" });
         title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         textBox.add_actor(title);
         const rule = new St.Label({
             style_class: "fayoo-xapp-status-manager-row-detail",
-            text: entry.orderRule || entry.rawRule || "No stable order identifier"
+            text: entry.orderRule || entry.rawRule || "没有稳定排序标识"
         });
         rule.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         textBox.add_actor(rule);
@@ -3089,7 +3303,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             style_class: "fayoo-xapp-status-manager-drop-zone"
         });
         zone.add_actor(new St.Label({
-            text: isEmpty ? "Drop here to add to managed order" : "Drop here to append"
+            text: isEmpty ? "拖到这里加入固定顺序" : "拖到这里追加"
         }));
         zone._delegate = this.createTrayIconManagerDropTarget("append", null, zone);
 
@@ -3102,7 +3316,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             reactive: true,
             style_class: "fayoo-xapp-status-manager-drop-zone fayoo-xapp-status-manager-remove-zone"
         });
-        zone.add_actor(new St.Label({ text: "Drop here to remove from managed order" }));
+        zone.add_actor(new St.Label({ text: "拖到这里从固定顺序中移除" }));
         zone._delegate = this.createTrayIconManagerDropTarget("remove", null, zone);
 
         return zone;
@@ -3223,34 +3437,40 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     }
 
     createTrayIconManagerEyeButton(entry) {
-        let label = entry.effectiveVisible ? "Hide" : "Show";
-        let tooltipText = entry.effectiveVisible ? "Hide this tray icon" : "Show this tray icon";
+        let label = entry.effectiveVisible ? "隐藏" : "显示";
+        let tooltipText = entry.effectiveVisible ? "隐藏这个托盘图标" : "显示这个托盘图标";
         let disabled = false;
         let action = null;
 
         if (entry.unavailable) {
             label = "-";
-            tooltipText = "Not currently active";
+            tooltipText = "当前未活动";
             disabled = true;
         } else if (entry.multipleMatches) {
             label = "-";
-            tooltipText = "Multiple icons match this order rule";
+            tooltipText = "多个图标匹配这个排序规则";
             disabled = true;
         } else if (!entry.hideRule) {
             label = "-";
-            tooltipText = "No safe hide rule";
+            tooltipText = "没有安全隐藏规则";
             disabled = true;
         } else if (entry.exactRulePresent) {
-            label = "Show";
-            tooltipText = "Remove exact hide rule";
+            label = entry.applicationVisible ? "显示" : "移除规则";
+            tooltipText = entry.applicationVisible
+                ? "移除精确隐藏规则，让它恢复显示"
+                : "移除精确隐藏规则；应用自身当前仍未请求显示";
             action = () => this.removeHiddenIconRule(entry.hideRule);
         } else if (entry.hiddenByOtherRule) {
             label = "-";
-            tooltipText = "Hidden by another rule";
+            tooltipText = "被其他规则隐藏";
             disabled = true;
+        } else if (!entry.applicationVisible) {
+            label = "加规则";
+            tooltipText = "应用自身当前未请求显示；添加规则后它重新显示时仍会被隐藏";
+            action = () => this.addHiddenIconRule(entry.hideRule);
         } else {
-            label = "Hide";
-            tooltipText = "Add exact hide rule";
+            label = "隐藏";
+            tooltipText = "添加精确隐藏规则";
             action = () => this.addHiddenIconRule(entry.hideRule);
         }
 
@@ -3281,7 +3501,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     createTrayIconManagerChangeIconButton(entry) {
         const disabled = !entry.customIconIdentity;
         const button = new St.Button({
-            label: "Change icon...",
+            label: "更换图标...",
             reactive: true,
             can_focus: !disabled,
             track_hover: true,
@@ -3297,8 +3517,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         }
 
         const tooltip = new Tooltips.Tooltip(button, disabled
-            ? "No stable custom icon identity"
-            : `Change custom icon for ${entry.customIconIdentity}`);
+            ? "没有稳定的自定义图标身份"
+            : `为 ${entry.customIconIdentity} 更换自定义图标`);
         this._trayIconManagerTooltips.push(tooltip);
 
         return button;
@@ -3307,7 +3527,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     createTrayIconManagerResetIconButton(entry) {
         const disabled = !entry.customIconIdentity || !entry.customIconDefaultOverride;
         const button = new St.Button({
-            label: "Reset icon",
+            label: "重置图标",
             reactive: true,
             can_focus: !disabled,
             track_hover: true,
@@ -3323,8 +3543,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         }
 
         const tooltip = new Tooltips.Tooltip(button, disabled
-            ? "No custom icon override to reset"
-            : `Reset custom icon for ${entry.customIconIdentity}`);
+            ? "没有可重置的自定义图标覆盖"
+            : `重置 ${entry.customIconIdentity} 的自定义图标`);
         this._trayIconManagerTooltips.push(tooltip);
 
         return button;
@@ -3333,7 +3553,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     createTrayIconManagerStateIconButton(entry) {
         const disabled = !entry.customIconIdentity || !entry.customIconStateRule;
         const button = new St.Button({
-            label: "State icon...",
+            label: "为当前状态设置图标...",
             reactive: true,
             can_focus: !disabled,
             track_hover: true,
@@ -3349,8 +3569,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         }
 
         const tooltip = new Tooltips.Tooltip(button, disabled
-            ? (entry.customIconStateRuleError || "No current icon state rule")
-            : `Change custom icon for current state ${entry.customIconStateRule}`);
+            ? (entry.customIconStateRuleError || "没有当前图标状态规则")
+            : `先把应用切到目标状态，再为当前状态 ${entry.customIconStateRule} 设置专用图标`);
         this._trayIconManagerTooltips.push(tooltip);
 
         return button;
@@ -3415,12 +3635,14 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         if (validation.valid) {
             state.statusLabel.remove_style_class_name("fayoo-xapp-status-manager-editor-status-error");
-            state.statusLabel.set_text(`Ready to save ${validation.type}:${validation.value}`);
+            state.statusLabel.set_text(validation.type === "file" && !this.isStoredCustomIconPath(validation.value)
+                ? `可以保存 ${validation.type}:${validation.value}；应用时会复制到 applet 专用图标目录`
+                : `可以保存 ${validation.type}:${validation.value}`);
             return true;
         }
 
         state.statusLabel.add_style_class_name("fayoo-xapp-status-manager-editor-status-error");
-        state.statusLabel.set_text(validation.error || "Invalid custom icon override");
+        state.statusLabel.set_text(validation.error || "无效的自定义图标覆盖");
         return false;
     }
 
@@ -3431,10 +3653,20 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             return;
         }
 
-        const validation = this.validateCustomIconOverride(state.selectedType, this.getCustomIconEditorSelectedValue());
+        let validation = this.validateCustomIconOverride(state.selectedType, this.getCustomIconEditorSelectedValue());
 
         if (!validation.valid) {
             this.updateCustomIconEditorValidation();
+            return;
+        }
+
+        validation = this.prepareCustomIconFileForSave(validation, state.identity, state.stateRule, state.scope);
+
+        if (!validation.valid) {
+            if (state.statusLabel && !state.statusLabel.is_finalized()) {
+                state.statusLabel.add_style_class_name("fayoo-xapp-status-manager-editor-status-error");
+                state.statusLabel.set_text(validation.error || "无法保存自定义图标覆盖");
+            }
             return;
         }
 
@@ -3445,7 +3677,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         if (!saved) {
             if (state.statusLabel && !state.statusLabel.is_finalized()) {
                 state.statusLabel.add_style_class_name("fayoo-xapp-status-manager-editor-status-error");
-                state.statusLabel.set_text("Unable to save custom icon override");
+                state.statusLabel.set_text("无法保存自定义图标覆盖");
             }
             return;
         }
@@ -3454,6 +3686,21 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         this._trayIconManagerMode = returnMode;
         this._trayIconEditorState = null;
         this.rebuildTrayIconManagerDialog();
+    }
+
+    copyCustomIconEditorStateRule() {
+        const state = this._trayIconEditorState;
+
+        if (!state || state.scope !== "state" || !state.stateRule) {
+            return;
+        }
+
+        this.copyTextToClipboard(state.stateRule);
+
+        if (state.statusLabel && !state.statusLabel.is_finalized()) {
+            state.statusLabel.remove_style_class_name("fayoo-xapp-status-manager-editor-status-error");
+            state.statusLabel.set_text(`已复制当前状态规则 ${state.stateRule}`);
+        }
     }
 
     cancelCustomIconEditor() {
@@ -3477,19 +3724,26 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         const editingState = state.scope === "state";
         this.setTrayIconManagerDescription(editingState
-            ? "Set a custom icon for the current icon state. State overrides match the original icon name exactly."
-            : "Set a default theme icon name or an absolute PNG/SVG file path. Invalid values are not saved.");
+            ? "先把应用切换到目标状态，再为当前检测到的状态保存专用图标；文件图标保存时会复制到 applet 专用目录。"
+            : "设置默认主题图标名称，或填写 PNG/SVG 文件的绝对路径；文件图标保存时会复制到 applet 专用目录。无效值不会保存。");
         const buttons = [
             {
-                label: "Cancel",
+                label: "取消",
                 action: () => this.cancelCustomIconEditor(),
                 key: Clutter.KEY_Escape
             }
         ];
 
+        if (editingState) {
+            buttons.push({
+                label: "复制状态规则",
+                action: () => this.copyCustomIconEditorStateRule()
+            });
+        }
+
         if (editingState && state.hasExistingOverride) {
             buttons.push({
-                label: "Reset State",
+                label: "重置状态",
                 action: () => this.resetCustomIconStateOverrideFromEditor(),
                 destructive_action: true
             });
@@ -3497,7 +3751,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         buttons.push(
             {
-                label: "Apply",
+                label: "应用",
                 action: () => this.applyCustomIconEditor(),
                 key: Clutter.KEY_Return,
                 default: true
@@ -3512,14 +3766,14 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
 
         const title = new St.Label({
             style_class: "fayoo-xapp-status-manager-section-title",
-            text: editingState ? `Change state icon: ${state.title}` : `Change default icon: ${state.title}`
+            text: editingState ? `为当前状态设置图标: ${state.title}` : `更换默认图标: ${state.title}`
         });
         title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         editor.add_actor(title);
 
         const identity = new St.Label({
             style_class: "fayoo-xapp-status-manager-row-detail",
-            text: `Identity: ${state.identity}`
+            text: `图标身份: ${state.identity}`
         });
         identity.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         editor.add_actor(identity);
@@ -3527,15 +3781,22 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         if (editingState) {
             const stateRule = new St.Label({
                 style_class: "fayoo-xapp-status-manager-row-detail",
-                text: `State: ${state.stateRule}`
+                text: `当前状态规则（精确匹配）: ${state.stateRule}`
             });
             stateRule.clutter_text.ellipsize = Pango.EllipsizeMode.END;
             editor.add_actor(stateRule);
+
+            const stateHint = new St.Label({
+                style_class: "fayoo-xapp-status-manager-row-detail",
+                text: "提示: 这个设置只会在应用再次进入同一状态规则时生效。"
+            });
+            stateHint.clutter_text.line_wrap = true;
+            editor.add_actor(stateHint);
         }
 
         const affectedText = state.affectedCount === 1
-            ? "Affects 1 active icon"
-            : `Affects ${state.affectedCount} active icons`;
+            ? "影响 1 个活动图标"
+            : `影响 ${state.affectedCount} 个活动图标`;
         editor.add_actor(new St.Label({
             style_class: "fayoo-xapp-status-manager-row-detail",
             text: affectedText
@@ -3546,11 +3807,11 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             style_class: "fayoo-xapp-status-manager-type-row"
         });
         typeRow.add_actor(new St.Label({
-            text: "Source:",
+            text: "来源:",
             style_class: "fayoo-xapp-status-manager-editor-label"
         }));
-        typeRow.add_actor(this.createCustomIconEditorTypeButton("theme", "Theme icon name"));
-        typeRow.add_actor(this.createCustomIconEditorTypeButton("file", "PNG/SVG file path"));
+        typeRow.add_actor(this.createCustomIconEditorTypeButton("theme", "主题图标名称"));
+        typeRow.add_actor(this.createCustomIconEditorTypeButton("file", "PNG/SVG 文件路径"));
         editor.add_actor(typeRow);
 
         const themeEntry = new St.Entry({
@@ -3579,8 +3840,8 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         themeEntry.clutter_text.connect("activate", Lang.bind(this, () => this.applyCustomIconEditor()));
         fileEntry.clutter_text.connect("activate", Lang.bind(this, () => this.applyCustomIconEditor()));
 
-        this.addCustomIconEditorEntryRow(editor, "Theme:", themeEntry);
-        this.addCustomIconEditorEntryRow(editor, "File:", fileEntry);
+        this.addCustomIconEditorEntryRow(editor, "主题:", themeEntry);
+        this.addCustomIconEditorEntryRow(editor, "文件:", fileEntry);
 
         const status = new St.Label({
             style_class: "fayoo-xapp-status-manager-editor-status",
@@ -3602,10 +3863,10 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
     }
 
     rebuildInactiveCustomIconOverridesDialog() {
-        this.setTrayIconManagerDescription("Manage custom icon overrides that are not currently shown in the active or managed rows.");
+        this.setTrayIconManagerDescription("管理当前没有显示在活动列表或固定顺序中的自定义图标覆盖。");
         this._trayIconManagerDialog.setButtons([
             {
-                label: "Back",
+                label: "返回",
                 action: () => {
                     this._trayIconManagerMode = "list";
                     this._trayIconEditorState = null;
@@ -3614,7 +3875,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
                 key: Clutter.KEY_Escape
             },
             {
-                label: "Close",
+                label: "关闭",
                 action: () => this._trayIconManagerDialog.close(global.get_current_time())
             }
         ]);
@@ -3626,13 +3887,13 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         });
         section.add_actor(new St.Label({
             style_class: "fayoo-xapp-status-manager-section-title",
-            text: "Inactive Custom Icon Overrides"
+            text: "未活动的自定义图标覆盖"
         }));
 
         if (records.length === 0) {
             section.add_actor(new St.Label({
                 style_class: "fayoo-xapp-status-manager-empty",
-                text: "No inactive custom icon overrides."
+                text: "没有未活动的自定义图标覆盖。"
             }));
         } else {
             for (let record of records) {
@@ -3672,14 +3933,14 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         const stateCount = record.stateOverrides ? record.stateOverrides.length : 0;
         const detail = new St.Label({
             style_class: "fayoo-xapp-status-manager-row-detail",
-            text: `${this.getTrayIconManagerCustomIconStatus(detailEntry)} - State overrides: ${stateCount} - Affects 0 active icons`
+            text: `${this.getTrayIconManagerCustomIconStatus(detailEntry)} - 状态覆盖: ${stateCount} - 影响 0 个活动图标`
         });
         detail.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         textBox.add_actor(detail);
         row.add_actor(textBox);
 
         const changeButton = new St.Button({
-            label: "Change icon...",
+            label: "更换图标...",
             reactive: true,
             can_focus: true,
             track_hover: true,
@@ -3689,7 +3950,7 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
         row.add_actor(changeButton);
 
         const resetButton = new St.Button({
-            label: "Reset icon",
+            label: "重置图标",
             reactive: true,
             can_focus: true,
             track_hover: true,
@@ -3920,11 +4181,11 @@ class CinnamonXAppStatusApplet extends Applet.Applet {
             const bMatched = bPriority !== null;
 
             if (aMatched && !bMatched) {
-                return -1;
+                return 1;
             }
 
             if (bMatched && !aMatched) {
-                return 1;
+                return -1;
             }
 
             if (aMatched && bMatched && aPriority !== bPriority) {

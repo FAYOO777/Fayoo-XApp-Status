@@ -1,8 +1,62 @@
 {
+    "layout": {
+        "type": "layout",
+        "pages": ["page-general", "page-rules", "page-advanced"],
+        "page-general": {
+            "type": "page",
+            "title": "常用",
+            "sections": ["section-manager", "section-display"]
+        },
+        "page-rules": {
+            "type": "page",
+            "title": "规则",
+            "sections": ["section-hidden", "section-order"]
+        },
+        "page-advanced": {
+            "type": "page",
+            "title": "高级",
+            "sections": ["section-custom-icons"]
+        },
+        "section-manager": {
+            "type": "section",
+            "title": "托盘图标管理",
+            "keys": ["manager-info", "open-tray-icon-manager"]
+        },
+        "section-display": {
+            "type": "section",
+            "title": "显示",
+            "keys": ["icon-scale"]
+        },
+        "section-hidden": {
+            "type": "section",
+            "title": "隐藏规则",
+            "keys": ["hidden-rules-info", "hidden-icons"]
+        },
+        "section-order": {
+            "type": "section",
+            "title": "高级排序规则",
+            "keys": ["order-rules-info", "icon-order"]
+        },
+        "section-custom-icons": {
+            "type": "section",
+            "title": "自定义图标数据",
+            "keys": ["custom-icons-info"]
+        }
+    },
+    "manager-info": {
+        "type": "label",
+        "description": "推荐使用托盘图标管理器完成排序、隐藏、默认自定义图标和状态专用图标设置。也可以在面板上右键此 applet 打开同一个管理器。"
+    },
+    "open-tray-icon-manager": {
+        "type": "button",
+        "description": "打开托盘图标管理器...",
+        "callback": "openTrayIconManager",
+        "tooltip": "打开可拖拽排序、隐藏/显示和更换图标的图形管理器。"
+    },
     "icon-scale": {
         "type": "combobox",
         "default": 100,
-        "description": "Tray icon scale",
+        "description": "托盘图标缩放",
         "options": {
             "80%": 80,
             "85%": 85,
@@ -14,21 +68,33 @@
             "115%": 115,
             "120%": 120
         },
-        "tooltip": "Scale tray icons shown by this applet. 100% keeps the Cinnamon default size."
+        "tooltip": "调整此 applet 显示的托盘图标大小。100% 使用 Cinnamon 默认大小。"
+    },
+    "hidden-rules-info": {
+        "type": "label",
+        "description": "每行一条规则。支持前缀：name:、icon:、tooltip:、label:。隐藏规则大小写不敏感，并按包含关系匹配。空行和以 # 开头的行会被忽略。"
     },
     "hidden-icons": {
         "type": "textview",
         "default": "",
-        "description": "Hidden tray icons",
+        "description": "隐藏的托盘图标",
         "height": 140,
-        "tooltip": "Enter one rule per line. Supported prefixes: name:, icon:, tooltip:, label:. Matching is case-insensitive. Empty lines and lines beginning with # are ignored."
+        "tooltip": "每行一条隐藏规则。通常建议从托盘图标信息菜单复制推荐规则。"
+    },
+    "order-rules-info": {
+        "type": "label",
+        "description": "这里适合手动维护高级排序规则。支持前缀：name:、icon:、tooltip:、label:。排序规则必须精确匹配，越靠前越优先；未固定图标保持默认顺序并显示在固定顺序前面。托盘图标管理器拖拽生成的固定顺序优先于这里的规则。"
     },
     "icon-order": {
         "type": "textview",
         "default": "",
-        "description": "Custom icon order",
+        "description": "自定义图标顺序",
         "height": 140,
-        "tooltip": "Enter one exact icon rule per line. Supported prefixes: name:, icon:, tooltip:, label:. Earlier rules appear first. Empty lines and lines beginning with # are ignored."
+        "tooltip": "每行一条精确排序规则。空行和以 # 开头的行会被忽略。"
+    },
+    "custom-icons-info": {
+        "type": "label",
+        "description": "自定义图标覆盖保存在隐藏设置 custom-icon-overrides 中。请优先使用托盘图标管理器编辑，避免手动写错 JSON。文件图标保存时会复制到 ~/.config/cinnamon/spices/fayoo-xapp-status@fayoo/custom-icons/。状态专用图标会按当前 icon、tooltip 或 label 生成的状态规则精确匹配。"
     },
     "managed-icon-order": {
         "type": "generic",

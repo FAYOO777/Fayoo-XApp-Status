@@ -5,15 +5,27 @@
 ### Added
 
 - Added state-aware custom tray icon overrides under `custom-icon-overrides`.
-- Added `State icon...` editing from Tray Icon Manager rows for the current generated state rule.
-- Added `Reset State` from the state icon editor.
+- Added `为当前状态设置图标...` editing from Tray Icon Manager rows for the current generated state rule.
+- Added `复制状态规则` from the state icon editor.
+- Added `重置状态` from the state icon editor.
 - Added diagnostics for custom icon scope, current state rule, matched state rule, and state override.
+- Added a Cinnamon settings button for opening the Tray Icon Manager directly.
+- Added effective icon previews in the Tray Icon Manager for current original, default custom, and state custom icons.
+- Added managed storage for file-based custom icons under the applet's Cinnamon config directory.
 
 ### Changed
 
 - Existing single custom icon overrides remain the default override for an identity.
 - State icon overrides take priority over default overrides when the current original icon rule matches.
+- Invalid state icon overrides fall back to the default override for the same identity when one is available.
 - Temporary original icon paths fall back to generated tooltip or label state rules.
+- Localized visible applet menus, Tray Icon Manager text, and custom icon editor text to Chinese.
+- Reorganized the Cinnamon settings dialog into Chinese pages and sections with inline rule guidance.
+- Clarified app-hidden versus rule-hidden tray icon states in the Tray Icon Manager.
+- Unmanaged tray icons now keep the default left-side position before fixed-order icons.
+- File-based custom icon overrides now save managed copies instead of referencing the original external file path.
+- Tray Icon Manager dragging now falls back to safe recommended rules when a stable order rule is unavailable.
+- Managed ordering now matches those fallback recommended rules against active icons instead of treating them as exact advanced rules.
 
 ## [0.3.0] - 2026-07-16
 
